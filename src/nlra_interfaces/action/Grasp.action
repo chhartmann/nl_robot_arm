@@ -1,0 +1,11 @@
+# Close the gripper to grasp. width maps to knuckle angle (0=open, 0.8=closed).
+float32 position 0.8        # target knuckle angle in rad, 0..0.8
+float32 max_effort 40.0
+---
+bool success
+int32 error_code            # 0 ok, 1 precondition_failed, 3 execution_failed, 4 cancelled
+string message
+bool object_detected        # true if gripper stalled before reaching target (i.e. holding something)
+---
+string phase                # validating | closing
+float32 progress

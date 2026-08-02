@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>agilus_robotiq_description</name>
+  <version>0.1.0</version>
+  <description>Combined KUKA Agilus KR 16 R1100-3 + Robotiq 2F-85 description for Gazebo Harmonic (gz_ros2_control).</description>
+  <maintainer email="christian@example.com">christian</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>kuka_agilus_support</exec_depend>
+  <exec_depend>kuka_gazebo</exec_depend>
+  <exec_depend>kuka_resources</exec_depend>
+  <exec_depend>robotiq_description</exec_depend>
+  <exec_depend>gz_ros2_control</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>position_controllers</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

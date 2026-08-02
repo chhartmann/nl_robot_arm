@@ -1,0 +1,8 @@
+# Natural-language robot command.
+string text          # e.g. "put the red cube into the blue tray"
+---
+bool success
+string task          # grounded task dispatched (empty if none)
+string args_json     # grounded arguments
+string response      # natural-language answer / explanation
+string error         # empty on success

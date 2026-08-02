@@ -1,0 +1,104 @@
+[workspace]
+name = "nl_robot_arm"
+version = "0.1.0"
+description = "NL-commanded KUKA Agilus KR 16 R1100-3 + Robotiq 2F-85 — orchestrator + skills, ROS 2 Jazzy, Gazebo Harmonic, sim only"
+authors = ["christian"]
+channels = ["robostack-jazzy", "conda-forge"]
+# Verified: robostack-jazzy has identical coverage on both. Pick your host arch
+# (or keep both so the workspace is portable).
+platforms = ["linux-64", "linux-aarch64"]
+
+# ---------------------------------------------------------------------------
+# Conda / RoboStack dependencies (solved by pixi/conda)
+# ---------------------------------------------------------------------------
+[dependencies]
+# --- ROS 2 Jazzy core ---
+ros-jazzy-desktop = "*"                       # includes rclpy, rviz2, tf2, etc.
+# --- Motion planning ---
+ros-jazzy-moveit = "*"
+ros-jazzy-moveit-py = "*"                      # Python MoveIt API for skills
+# --- Control ---
+ros-jazzy-ros2-control = "*"
+ros-jazzy-ros2-controllers = "*"
+ros-jazzy-controller-manager = "*"
+ros-jazzy-joint-trajectory-controller = "*"
+# --- Gazebo Harmonic integration ---
+ros-jazzy-ros-gz = "*"                         # ros_gz metapackage
+ros-jazzy-ros-gz-sim = "*"
+ros-jazzy-gz-ros2-control = "*"                # ros2_control <-> Gazebo
+# --- Robot / gripper descriptions ---
+ros-jazzy-robotiq-description = "*"            # Robotiq 2F-85 URDF
+# (KUKA Agilus URDF is built from source — see [tasks].fetch_sources)
+# --- Behavior trees for the orchestrator ---
+ros-jazzy-py-trees = "*"
+ros-jazzy-py-trees-ros = "*"
+# --- Build toolchain (conda-forge) ---
+colcon-common-extensions = "*"
+compilers = "*"
+cmake = "<4"
+ninja = "*"
+pkg-config = "*"
+rosdep = "*"
+git = "*"
+python = "3.12.*"
+
+# ---------------------------------------------------------------------------
+# PyPI dependencies — resolved & installed by uv (pixi's native integration)
+# ---------------------------------------------------------------------------
+[pypi-dependencies]
+vcstool = "*"                # not on conda for this combo; pull from PyPI
+# LLM / NL layer (uncomment/pin your provider SDK of choice)
+# openai = "*"
+# anthropic = "*"
+pydantic = "*"               # typed plan schema for function-calling
+scipy = "*"                  # numeric IK in the orchestrator
+yourdfpy = "*"               # URDF FK for the orchestrator IK
+httpx = "*"
+python-dotenv = "*"          # load API keys from .env
+# dev / test
+pytest = "*"
+rich = "*"
+
+# ---------------------------------------------------------------------------
+# Activation — source the colcon overlay after it exists
+# ---------------------------------------------------------------------------
+[activation]
+scripts = ["install/setup.sh"]
+
+[activation.env]
+# Gazebo Harmonic must find the gz_ros2_control system plugin, which RoboStack
+# installs into the pixi env lib dir (not a system path Gazebo searches).
+GZ_SIM_SYSTEM_PLUGIN_PATH = "$CONDA_PREFIX/lib"
+# Also expose ros_gz + other gz system plugins from the same place, plus the
+# colcon overlay: kuka_agilus_support URDF meshes are referenced as
+# package:// URIs, which ros_gz rewrites to model://kuka_agilus_support/...
+# on spawn — Gazebo resolves model:// only against GZ_SIM_RESOURCE_PATH, so
+# without the overlay share dir the robot renders mesh-less.
+GZ_SIM_RESOURCE_PATH = "$CONDA_PREFIX/share:$PIXI_PROJECT_ROOT/install/kuka_agilus_support/share"
+# RoboStack installs gz-rendering engine plugins into lib/gz-rendering-8/
+# engine-plugins, but the GUI's RenderEngineManager doesn't search there by
+# default -> "Failed to load plugin [gz-rendering-ogre]". Point it at the dir.
+GZ_RENDERING_PLUGIN_PATH = "$CONDA_PREFIX/lib/gz-rendering-8/engine-plugins"
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+[tasks]
+# One-time: fetch source-only repos (KUKA Agilus description + Gazebo support).
+# We deliberately do NOT clone kuka_drivers (real-time HW driver) for sim-only.
+fetch_sources = """
+mkdir -p src && cd src && \
+test -d kuka_robot_descriptions || git clone --depth 1 https://github.com/kroshu/kuka_robot_descriptions.git
+"""
+
+# Resolve any remaining source deps via rosdep (skips what pixi already provides).
+deps = { cmd = "rosdep install --from-paths src --ignore-src -r -y --skip-keys 'ros-jazzy-desktop'", depends-on = ["fetch_sources"] }
+
+# Build the colcon workspace.
+build = { cmd = "colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release", depends-on = ["fetch_sources"] }
+
+# Convenience: check ROS is live inside the env.
+ros_check = "ros2 pkg list | grep -E 'moveit|ros_gz|controller' | head"
+
+# Launch the Agilus in Gazebo (target once description is wired — Phase 1).
+# sim = { cmd = "ros2 launch agilus_robotiq_description spawn_agilus_robotiq.launch.py", depends-on = ["build"] }

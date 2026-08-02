@@ -1,0 +1,64 @@
+# =============================================
+# nl_robot_arm — .gitignore
+# =============================================
+
+# Pixi
+.pixi/
+pixi.lock
+
+# ROS2 / Colcon build artefacts
+install/
+log/
+src/*/install/
+src/*/log/
+src/*/build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Demo / render output
+.render_urdf.py
+.snapshot_urdf.xml
+.demo/
+
+# Docs generated
+docs/*.html
+docs/*.mp4
+docs/*.png
+
+# Backup / temp files
+*.bak
+*.old
+*.tmp
+
+# Archive
+projekt-main.zip
+
+# Embedded git repos (submodules — add via 'git submodule add' properly)
+src/kuka_robot_descriptions/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

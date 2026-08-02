@@ -1,0 +1,9 @@
+# Return the arm to its named home configuration and open the gripper.
+bool open_gripper true
+---
+bool success
+int32 error_code            # 0 ok, 3 execution_failed, 4 cancelled
+string message
+---
+string phase                # arm_homing | gripper_opening
+float32 progress

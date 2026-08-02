@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>nlra_bringup</name>
+  <version>0.1.0</version>
+  <description>Single-command bringup for the full NL robot arm stack.</description>
+  <maintainer email="christian@example.com">christian</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>agilus_robotiq_description</exec_depend>
+  <exec_depend>nlra_world_model</exec_depend>
+  <exec_depend>nlra_skills</exec_depend>
+  <exec_depend>nlra_orchestrator</exec_depend>
+  <exec_depend>nlra_nl_interface</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

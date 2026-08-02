@@ -1,0 +1,21 @@
+# Execute a high-level task by name with JSON args.
+# Tasks are plans of skills; the orchestrator grounds object references
+# via the world model, executes step by step, and aborts on failure.
+#
+# Known tasks:
+#   home            {}
+#   pick            {"object_id": "red_cube"}
+#   place           {"target_id": "blue_box"}   (assumes object held)
+#   pick_and_place  {"object_id": "red_cube", "target_id": "blue_box"}
+string task
+string args_json
+---
+bool success
+int32 error_code       # 0 ok, 1 unknown_task, 2 grounding_failed, 3 skill_failed, 4 cancelled
+string message
+string failed_step     # empty if success
+---
+string step            # current step name, e.g. "approach:red_cube"
+uint32 step_index
+uint32 step_count
+float32 progress       # 0..1 across the plan

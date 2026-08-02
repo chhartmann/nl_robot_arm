@@ -1,0 +1,12 @@
+# Move the arm end-effector (flange) to a Cartesian pose in a named frame.
+# Planning + collision-aware execution is delegated to MoveIt by the skill server.
+geometry_msgs/PoseStamped target
+float32 velocity_scaling 0.2      # 0..1, fraction of joint velocity limits
+float32 acceleration_scaling 0.2
+---
+bool success
+int32 error_code            # 0 ok, 1 precondition_failed, 2 planning_failed, 3 execution_failed, 4 cancelled
+string message
+---
+string phase                # validating | planning | executing
+float32 progress            # 0..1 best-effort

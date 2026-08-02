@@ -1,0 +1,10 @@
+# Move the arm to an explicit joint configuration (6 joints, radians).
+float64[6] positions
+float32 duration 3.0        # seconds for the trajectory
+---
+bool success
+int32 error_code            # 0 ok, 1 precondition_failed, 3 execution_failed, 4 cancelled
+string message
+---
+string phase                # validating | executing
+float32 progress

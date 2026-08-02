@@ -1,0 +1,8 @@
+# Open the gripper fully (release any held object).
+---
+bool success
+int32 error_code            # 0 ok, 3 execution_failed, 4 cancelled
+string message
+---
+string phase                # opening
+float32 progress

@@ -1,0 +1,5 @@
+# Get one object's pose by id.
+string id
+---
+bool found
+nlra_interfaces/WorldObject object

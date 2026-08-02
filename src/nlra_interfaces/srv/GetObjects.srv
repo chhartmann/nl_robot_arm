@@ -1,0 +1,4 @@
+# List all known world objects (optionally filter by kind).
+string kind_filter    # empty = all
+---
+nlra_interfaces/WorldObject[] objects

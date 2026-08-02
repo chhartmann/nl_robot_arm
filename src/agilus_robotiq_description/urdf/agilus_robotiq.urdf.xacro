@@ -1,0 +1,144 @@
+<?xml version="1.0"?>
+<!--
+  Combined KUKA Agilus KR 16 R1100-3 + Robotiq 2F-85, for Gazebo Harmonic.
+
+  We deliberately do NOT use the kuka ros2_control macro in mode=gazebo,
+  because that macro auto-injects its own gz_ros2_control plugin bound to an
+  arm-only controller config (kuka_resources/fake_hardware_config_6_axis.yaml).
+  That would (a) duplicate the system plugin and (b) never spawn gripper
+  controllers. Instead we:
+   * use the agilus macro ONLY for arm links/joints (geometry + kinematics),
+   * use the robotiq macro ONLY for gripper links/joints (include_ros2_control:=false),
+   * declare ONE ros2_control system (arm 6 joints + gripper knuckle) bound to
+     gz_ros2_control/GazeboSimSystem,
+   * add ONE gz_ros2_control plugin pointing at our combined controller yaml.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="agilus_robotiq">
+
+  <xacro:arg name="prefix" default=""/>
+  <xacro:arg name="controller_config" default="$(find agilus_robotiq_description)/config/agilus_robotiq_controllers.yaml"/>
+  <xacro:property name="prefix" value="$(arg prefix)"/>
+
+  <!-- ================= arm geometry ================= -->
+  <xacro:include filename="$(find kuka_agilus_support)/urdf/kr16_r1100_3_macro.xacro"/>
+  <link name="world"/>
+  <xacro:kuka_kr16_r1100_3_robot prefix="${prefix}" package_name="kuka_agilus_support"/>
+  <joint name="${prefix}world-base_link" type="fixed">
+    <parent link="world"/>
+    <child link="${prefix}base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================= gripper geometry ================= -->
+  <!-- Mounted with a 90 deg x / 90 deg z offset (rpy="${pi/2} 0 ${pi/2}"):
+       the flange's +Z points up at the home pose, which would make the
+       gripper "look up". The rotation maps the gripper's +Z (finger axis)
+       to the flange's +X, i.e. forward (toward the table) at home, with the
+       fingers opening horizontally (world +Y). -->
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+  <xacro:robotiq_gripper
+      name="${prefix}robotiq_2f85"
+      prefix="${prefix}"
+      parent="${prefix}flange"
+      include_ros2_control="false">
+    <origin xyz="0 0 0" rpy="${pi/2} 0 ${pi/2}"/>
+  </xacro:robotiq_gripper>
+
+  <!-- ================= single ros2_control system ================= -->
+  <ros2_control name="${prefix}agilus_robotiq" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+
+    <!-- arm joints: position command + state -->
+    <xacro:macro name="arm_joint" params="num init">
+      <joint name="${prefix}joint_${num}">
+        <command_interface name="position"/>
+        <state_interface name="position">
+          <param name="initial_value">${init}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+        <state_interface name="effort"/>
+      </joint>
+    </xacro:macro>
+    <xacro:arm_joint num="1" init="0.0"/>
+    <xacro:arm_joint num="2" init="-1.5708"/>
+    <xacro:arm_joint num="3" init="1.5"/>
+    <xacro:arm_joint num="4" init="0.0"/>
+    <xacro:arm_joint num="5" init="0.0"/>
+    <xacro:arm_joint num="6" init="0.0"/>
+
+    <!-- gripper: single actuated knuckle + 5 mimic joints. gz_ros2_control
+         applies the mimic coupling in software (the default physics engine does
+         NOT enforce URDF mimic constraints), so the followers must be declared
+         here with mimic params. Only the knuckle gets a command interface. -->
+    <joint name="${prefix}robotiq_85_left_knuckle_joint">
+      <command_interface name="position">
+        <param name="min">0.0</param>
+        <param name="max">0.8</param>
+      </command_interface>
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="${prefix}robotiq_85_right_knuckle_joint">
+      <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+      <param name="multiplier">-1</param>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="${prefix}robotiq_85_left_inner_knuckle_joint">
+      <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+      <param name="multiplier">1</param>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="${prefix}robotiq_85_right_inner_knuckle_joint">
+      <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+      <param name="multiplier">-1</param>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="${prefix}robotiq_85_left_finger_tip_joint">
+      <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+      <param name="multiplier">-1</param>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="${prefix}robotiq_85_right_finger_tip_joint">
+      <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
+      <param name="multiplier">1</param>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+  <!-- ================= one gz_ros2_control plugin ================= -->
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+      <parameters>$(arg controller_config)</parameters>
+    </plugin>
+  </gazebo>
+
+  <!-- ============ grasp: detachable-joint attach on close ============ -->
+  <!-- bullet-featherstone ignores <ode> friction, so reliable pick uses a
+       DetachableJoint: starts detached, attaches red_cube to the left
+       fingertip on /gripper/attach, releases on /gripper/detach. -->
+  <gazebo>
+    <plugin filename="gz-sim-detachable-joint-system"
+            name="gz::sim::systems::DetachableJoint">
+      <parent_link>robotiq_85_left_finger_tip_link</parent_link>
+      <child_model>red_cube</child_model>
+      <child_link>link</child_link>
+      <attach_topic>/gripper/attach</attach_topic>
+      <detach_topic>/gripper/detach</detach_topic>
+      <output_topic>/gripper/attach_state</output_topic>
+      <suppress_initial_attach>true</suppress_initial_attach>
+    </plugin>
+  </gazebo>
+
+</robot>

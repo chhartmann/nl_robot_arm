@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!-- empty_bullet world + a fixed camera for offscreen snapshots -->
+<sdf version="1.9">
+  <world name="empty">
+    <physics name="1ms" type="bullet">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">
+      <engine>
+        <filename>gz-physics-bullet-featherstone-plugin</filename>
+      </engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+    <light type="point" name="fill">
+      <pose>2 -2 3 0 0 0</pose>
+      <diffuse>0.4 0.4 0.4 1</diffuse>
+      <attenuation><range>20</range><constant>0.6</constant><linear>0.05</linear></attenuation>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
+          <material>
+            <ambient>0.75 0.75 0.78 1</ambient>
+            <diffuse>0.75 0.75 0.78 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- fixed snapshot camera looking at the robot from front-side -->
+    <model name="snapshot_cam">
+      <static>true</static>
+      <pose>2.2 -2.2 1.6 0 0.35 2.35</pose>
+      <link name="link">
+        <sensor name="camera" type="camera">
+          <camera>
+            <horizontal_fov>1.05</horizontal_fov>
+            <image><width>1280</width><height>720</height></image>
+            <clip><near>0.05</near><far>50</far></clip>
+          </camera>
+          <always_on>1</always_on>
+          <update_rate>10</update_rate>
+          <topic>snapshot_cam/image</topic>
+        </sensor>
+      </link>
+    </model>
+  </world>
+</sdf>
