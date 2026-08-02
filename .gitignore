@@ -51,9 +51,6 @@ docs/*.png
 # Archive
 projekt-main.zip
 
-# Embedded git repos (submodules — add via 'git submodule add' properly)
-src/kuka_robot_descriptions/
-
 # Environment
 .env
 .env.*

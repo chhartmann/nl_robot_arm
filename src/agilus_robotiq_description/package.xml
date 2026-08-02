@@ -10,9 +10,6 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <exec_depend>xacro</exec_depend>
-  <exec_depend>kuka_agilus_support</exec_depend>
-  <exec_depend>kuka_gazebo</exec_depend>
-  <exec_depend>kuka_resources</exec_depend>
   <exec_depend>robotiq_description</exec_depend>
   <exec_depend>gz_ros2_control</exec_depend>
   <exec_depend>ros_gz_sim</exec_depend>

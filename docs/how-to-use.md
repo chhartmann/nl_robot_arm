@@ -7,9 +7,11 @@ via `ros2_control`. Everything runs inside the pixi environment.
 
 ```bash
 pixi install                 # create env + install conda/PyPI deps
-pixi run fetch_sources       # clone kuka_robot_descriptions (if not done)
 pixi run build               # colcon build the workspace (src/)
 ```
+
+All sources are self-contained (Agilus URDF + meshes are vendored in
+`agilus_robotiq_description` — no `kuka_robot_descriptions` clone needed).
 
 `pixi install` warns about `install/setup.sh` missing — expected until the
 workspace is built. The shell activation (Gazebo plugin paths, colcon overlay)

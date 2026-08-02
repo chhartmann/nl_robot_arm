@@ -2,6 +2,10 @@
 <!--
   Combined KUKA Agilus KR 16 R1100-3 + Robotiq 2F-85, for Gazebo Harmonic.
 
+  Fully self-contained: the arm geometry (links, joints, meshes) is vendored
+  from kroshu/kuka_robot_descriptions (Apache-2.0) into this package, so there
+  is no kuka_robot_descriptions / kuka_agilus_support dependency.
+
   We deliberately do NOT use the kuka ros2_control macro in mode=gazebo,
   because that macro auto-injects its own gz_ros2_control plugin bound to an
   arm-only controller config (kuka_resources/fake_hardware_config_6_axis.yaml).
@@ -20,9 +24,12 @@
   <xacro:property name="prefix" value="$(arg prefix)"/>
 
   <!-- ================= arm geometry ================= -->
-  <xacro:include filename="$(find kuka_agilus_support)/urdf/kr16_r1100_3_macro.xacro"/>
+  <!-- Self-contained: KR 16 R1100-3 links/joints + meshes are vendored in
+       this package (urdf/kr16_r1100_3_macro.xacro, meshes/kr16_r1100_3/),
+       no kuka_robot_descriptions dependency. -->
+  <xacro:include filename="$(find agilus_robotiq_description)/urdf/kr16_r1100_3_macro.xacro"/>
   <link name="world"/>
-  <xacro:kuka_kr16_r1100_3_robot prefix="${prefix}" package_name="kuka_agilus_support"/>
+  <xacro:kuka_kr16_r1100_3_robot prefix="${prefix}"/>
   <joint name="${prefix}world-base_link" type="fixed">
     <parent link="world"/>
     <child link="${prefix}base_link"/>

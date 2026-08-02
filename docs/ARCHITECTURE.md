@@ -10,7 +10,7 @@
 
 | Layer | Choice | Source of truth |
 |-------|--------|-----------------|
-| Robot | KUKA Agilus KR 16 R1100-3 | `kroshu/kuka_robot_descriptions` → `kuka_agilus_support` |
+| Robot | KUKA Agilus KR 16 R1100-3 | vendored URDF + meshes in `agilus_robotiq_description` (from `kroshu/kuka_robot_descriptions`, Apache-2.0) |
 | Gripper | Robotiq 2F-85 | Robotiq ROS2 description + controller |
 | ROS2 distro | Jazzy (Ubuntu 24.04) | KUKA's own recommendation |
 | Simulation | Gazebo Harmonic | ROS2-native, ros2_control integration |
@@ -118,7 +118,7 @@ verified in sim (headless, aarch64). As-built notes inline below.**
 
 ### Phase 0 — Environment & scaffolding — ✅ DONE
 - [x] ROS2 Jazzy + Gazebo Harmonic + MoveIt 2 via **pixi/RoboStack** (not bare Ubuntu; runs on aarch64 + x86_64)
-- [x] Clone/build `kuka_robot_descriptions` (Agilus). **kuka_drivers NOT used — sim-only.**
+- [x] Vendor Agilus KR 16 R1100-3 URDF macro + meshes into `agilus_robotiq_description` (no `kuka_robot_descriptions` dependency). **kuka_drivers NOT used — sim-only.**
 - [x] Colcon workspace + repo structure
 - **Done when:** `colcon build` succeeds; Agilus URDF valid. ✅
 
