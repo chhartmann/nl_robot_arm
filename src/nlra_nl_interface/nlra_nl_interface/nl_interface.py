@@ -27,7 +27,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from nlra_interfaces.action import ExecuteTask
-from nlra_interfaces.srv import GetObjects, NLCommand
+from nlra_interfaces.srv import GetGraspPose, GetObjects, NLCommand
 
 load_dotenv()
 LLM_BASE = os.environ.get("NLRA_LLM_BASE", "https://api.hcnsec.cn/v1")
@@ -62,7 +62,29 @@ TOOLS = [{
             "required": ["task"],
         },
     },
-}]
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_grasp_pose",
+            "description": (
+                "Answer where/how the robot would grasp an object without "
+                "moving: returns the grasp position and orientation for the "
+                "given object_id. By default the gripper is oriented parallel "
+                "to the object (fingers aligned with the object's axes, "
+                "approach from above). Use for questions like 'where would "
+                "you grab the cube?'."),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "object_id": {"type": "string",
+                              "description": "id of the object to grasp"},
+            },
+            "required": ["object_id"],
+        },
+    },
+    },
+]
 
 SYSTEM_TMPL = (
     "You are the command interface of a KUKA Agilus KR 16 R1100-3 robot arm "
@@ -118,6 +140,8 @@ class NLInterface(Node):
                                   callback_group=self._cb)
         self._get_objects = self.create_client(GetObjects, "world_model/get_objects",
                                                callback_group=self._cb)
+        self._get_grasp_pose = self.create_client(
+            GetGraspPose, "world_model/get_grasp_pose", callback_group=self._cb)
         self.create_service(NLCommand, "nl_command", self._on_command,
                             callback_group=self._cb)
         if not LLM_KEY:
@@ -158,6 +182,33 @@ class NLInterface(Node):
         res = rfut.result().result
         return bool(res.success), res.message
 
+    def _answer_grasp_pose(self, resp, args):
+        """Answer a 'where/how would you grasp X?' query from the world model."""
+        obj_id = str(args.get("object_id", "")).strip()
+        if not obj_id:
+            resp.error = "get_grasp_pose requires an object_id"
+            return resp
+        if not self._get_grasp_pose.wait_for_service(timeout_sec=5.0):
+            resp.error = "grasp pose service unavailable"
+            return resp
+        fut = self._get_grasp_pose.call_async(
+            GetGraspPose.Request(object_id=obj_id))
+        t0 = time.monotonic()
+        while not fut.done():
+            if time.monotonic() - t0 > 5.0:
+                resp.error = "grasp pose query timed out"
+                return resp
+            time.sleep(0.05)
+        res = fut.result()
+        if not res.found:
+            resp.error = res.message
+            return resp
+        p = res.grasp_pose.pose.position
+        resp.success = True
+        resp.response = (f"{res.message}; grasp point at "
+                         f"({p.x:.2f}, {p.y:.2f}, {p.z:.2f}) m in the world frame")
+        return resp
+
     def _on_command(self, req, resp):
         text = req.text.strip()
         self.get_logger().info(f"NL command: {text!r}")
@@ -196,6 +247,10 @@ class NLInterface(Node):
         except (KeyError, json.JSONDecodeError) as e:
             resp.error = f"bad tool call from LLM: {e}"
             return resp
+
+        if fn.get("name") == "get_grasp_pose":
+            return self._answer_grasp_pose(resp, args)
+
         task = args.pop("task", "")
         args_json = json.dumps(args)
         self.get_logger().info(f"grounded: task={task} args={args_json}")

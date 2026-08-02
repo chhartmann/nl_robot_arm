@@ -99,7 +99,7 @@ nl_robot_arm/                      # colcon workspace root (pixi-managed)
 │   ├── agilus_robotiq_description/  # combined URDF (Agilus KR 16 R1100-3 + Robotiq 2F-85), world, ros2_control, spawn launch
 │   ├── nlra_interfaces/           # .action / .srv / .msg (MoveJoints, Grasp, Release, Home, MoveTo, ExecuteTask, NLCommand, ...)
 │   ├── nlra_skills/               # skill action servers (move_joints, grasp, release, home)
-│   ├── nlra_world_model/          # world model services (get_objects, get_object_pose) — ground-truth poses
+│   ├── nlra_world_model/          # world model services (get_objects, get_object_pose, get_grasp_pose) — ground-truth poses
 │   ├── nlra_orchestrator/         # task planner: grounding + numeric IK + skill sequencing + retry + postcondition
 │   ├── nlra_nl_interface/         # LLM function-calling NL front-end (/nl_command)
 │   └── nlra_bringup/              # single ros2 launch for the whole stack
@@ -136,12 +136,13 @@ verified in sim (headless, aarch64). As-built notes inline below.**
 ### Phase 3 — World Model + perception — ✅ DONE (4/4 checks, demo MP4)
 - [x] Tabletop scene + colored objects (red_cube dynamic, blue_box tray, table)
 - [x] World poses via **per-model PosePublisher** (ground truth); static models need `pose_static` topic
-- [x] `nlra_world_model`: `get_objects` / `get_object_pose` services
+- [x] `nlra_world_model`: `get_objects` / `get_object_pose` / `get_grasp_pose` services
+- [x] `get_grasp_pose` answers "where/how to grasp an object" and by default returns the gripper parallel to the object (approach from above, finger closing axis aligned with the object's yaw); pick uses it, so pick grasps are orientation-aligned instead of yaw-agnostic
 - Perception is ground-truth from sim (camera-sensor render segfaults headless w/o GPU); vision-based detection deferred
 - **Done when:** World Model reports live object poses matching the scene. ✅
 
 ### Phase 4 — Orchestrator — ✅ DONE (8/8 checks)
-- [x] `nlra_orchestrator`: `ExecuteTask` action; grounds object → **numeric IK** (yourdfpy FK + scipy least-squares, 0.0 mm err, tool-down); sequences skills with per-step feedback + typed error codes
+- [x] `nlra_orchestrator`: `ExecuteTask` action; grounds object → **numeric IK** (yourdfpy FK + scipy least-squares, 0.0 mm err, tool-down; `ik_grasp` also constrains the finger closing axis parallel to the object); sequences skills with per-step feedback + typed error codes
 - [x] Tasks: home, pick, place, pick_and_place
 - **Done when:** structured task runs full monitored pick-and-place. ✅
 

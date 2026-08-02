@@ -1,0 +1,9 @@
+# Ask for the pose the gripper must adopt to grasp an object.
+# By default the gripper is oriented parallel to the object: approach from
+# above with the finger closing axis aligned with the object's horizontal
+# axes (yaw of the object).
+string object_id
+---
+bool found
+geometry_msgs/PoseStamped grasp_pose   # grasp point + orientation, in the world frame
+string message

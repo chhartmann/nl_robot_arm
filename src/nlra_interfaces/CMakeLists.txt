@@ -9,6 +9,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WorldObject.msg"
   "srv/GetObjects.srv"
   "srv/GetObjectPose.srv"
+  "srv/GetGraspPose.srv"
   "srv/NLCommand.srv"
   "action/MoveTo.action"
   "action/ExecuteTask.action"

@@ -57,6 +57,16 @@ def generate_launch_description():
         [FindPackageShare(pkg), "config", "gui_front.config"]
     )
 
+    # Always reset: kill any leftover gz sim server from a previous run so the
+    # simulation always starts fresh (world state, robot pose, attach state).
+    # Runs as its own process (chained to gz start via OnProcessExit below):
+    # a pkill in the same cmdline as gz would match its own wrapper. The
+    # "gz [s]im" pattern avoids matching this reset wrapper's own cmdline.
+    reset_sim = ExecuteProcess(
+        cmd=["bash", "-c", "pkill -f 'gz [s]im' || true"],
+        output="screen",
+    )
+
     gz_gui = ExecuteProcess(
         cmd=["gz", "sim", "-r", "-v", "3", "--render-engine", render_engine,
              "--gui-config", gui_config, world_file],
@@ -76,6 +86,24 @@ def generate_launch_description():
     clock_bridge = Node(
         package="ros_gz_bridge", executable="parameter_bridge",
         arguments=["/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock"],
+        output="screen",
+    )
+
+    # gz-sim8's DetachableJoint welds the child model to the parent link on the
+    # first physics tick after the robot spawns: its attachRequested flag
+    # defaults to true and <suppress_initial_attach> is NOT supported by the
+    # plugin (silently ignored). Without this, red_cube is glued to the
+    # fingertip from t=0 and gets dragged off the table by the first arm move.
+    # A few seconds after spawn: detach it and restore its tabletop pose so
+    # the pick flow owns attach/detach.
+    cube_release = ExecuteProcess(
+        cmd=["bash", "-c",
+             "sleep 3; "
+             "gz topic -t /gripper/detach -m gz.msgs.Empty -p ''; "
+             "gz service -s /world/scene/set_pose --reqtype gz.msgs.Pose "
+             "--reptype gz.msgs.Boolean "
+             "--req 'name: \"red_cube\", position: {x: 0.55, y: 0.15, "
+             "z: 0.425}, orientation: {w: 1.0}}'"],
         output="screen",
     )
 
@@ -104,10 +132,12 @@ def generate_launch_description():
         DeclareLaunchArgument("world", default_value="empty_bullet.sdf",
                               description="World file in this package's worlds/ dir"),
         rsp,
-        gz_gui,
-        gz_headless,
+        reset_sim,
         spawn,
         clock_bridge,
+        RegisterEventHandler(OnProcessExit(target_action=reset_sim,
+                                           on_exit=[gz_gui, gz_headless])),
         RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[jsb])),
         RegisterEventHandler(OnProcessExit(target_action=jsb, on_exit=[arm, grip])),
+        RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[cube_release])),
     ])

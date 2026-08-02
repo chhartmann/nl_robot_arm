@@ -28,7 +28,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from nlra_interfaces.action import ExecuteTask, Grasp, Home, MoveJoints, Release
-from nlra_interfaces.srv import GetObjectPose
+from nlra_interfaces.srv import GetGraspPose, GetObjectPose
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Empty
 
@@ -55,7 +55,21 @@ JOINT_INDEX = {
 # grasp point offset below tool0 (gripper fingers) along tool z
 GRASP_OFFSET = 0.15
 
-GRIPPER_CLOSED_ON_CUBE = 0.60  # knuckle rad, squeeze slightly past 5cm-cube contact
+# knuckle rad past first pad contact with a 5 cm cube (~0.70): the gripper
+# stalls on the cube before reaching this target, which is what the stall
+# detector in the grasp skill uses to report "object detected".
+#
+# The value is just past contact (0.73 -> pads sink ~3 mm): the detachable
+# joint glues the cube anyway, so a deep preload is not needed. A deep
+# squeeze (0.78, ~9 mm sink) made the pad reaction forces on a glued cube
+# blow the knuckle past its 0.8 limit (fingers crossed over, cube dropped).
+GRIPPER_CLOSED_ON_CUBE = 0.73
+# Pre-close knuckle angle before the descend (pad gap ~7.3 cm): narrow enough
+# to fit a 16 cm tray interior with the cube off-center, wide enough to clear
+# the 5 cm cube. The fingertips sweep PRE_CLOSE_DIP further down at this
+# angle, which the descend target compensates for.
+PRE_CLOSE = 0.5
+PRE_CLOSE_DIP = 0.0125
 APPROACH_CLEARANCE = 0.18      # m above grasp height for approach pose
 # Max 3D distance between the cube center and the current FK grasp point for
 # the detachable-joint attach to be allowed. gz-sim's DetachableJoint has NO
@@ -98,11 +112,13 @@ def _get_urdf():
 
 
 def _fk(q):
-    """Return (grasp_point, approach_dir) for joint vector q.
+    """Return (grasp_point, approach_dir, close_dir) for joint vector q.
 
     grasp point = midpoint between the two fingertip links;
     approach dir = unit vector from gripper base to that midpoint
-    (the direction the fingers point; must face down for a top grasp).
+    (the direction the fingers point; must face down for a top grasp);
+    close dir  = unit vector from left fingertip to right fingertip
+    (the direction the fingers close; the gripper's local +x axis).
     """
     import numpy as np
     u = _get_urdf()
@@ -114,33 +130,57 @@ def _fk(q):
     v = mid - Tb[:3, 3]
     n = np.linalg.norm(v)
     approach = v / n if n > 1e-9 else np.array([0.0, 0.0, -1.0])
-    return mid, approach
+    vc = Tr[:3, 3] - Tl[:3, 3]
+    n = np.linalg.norm(vc)
+    close = vc / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+    return mid, approach, close
 
 
-def ik_top_down(x, y, z_grasp):
+def _ik_seed_matches(close_from_fk, close_dir):
+    """True if the FK-reported closing axis matches close_dir (same sign)."""
+    return (close_from_fk[0] * close_dir[0]
+            + close_from_fk[1] * close_dir[1]
+            + close_from_fk[2] * close_dir[2]) > 0.0
+
+
+def ik_top_down(x, y, z_grasp, seed=None):
     """Numeric IK: put the grasp point at (x,y,z) with tool z pointing down.
 
-    Returns [j1..j6] or None if no converged solution.
+    Yaw about the approach axis is free (only the approach direction is
+    constrained). Returns [j1..j6] or None if no converged solution.
+
+    seed: a previous solution for a nearby pose. When given, it is tried
+    first and guarantees a solution on the same joint-space branch, so
+    consecutive moves interpolate smoothly instead of flipping the wrist
+    (e.g. j4 0 <-> -pi) and colliding with the tray/table mid-move.
     """
     import numpy as np
     from scipy.optimize import least_squares
 
     target = np.array([x, y, z_grasp])
+    down = np.array([0.0, 0.0, -1.0])
 
     def resid(q):
-        pos, approach = _fk(q)
+        pos, approach, _close = _fk(q)
         # fingers must point straight down (-z) at the target point
         return np.concatenate([
             (pos - target) * 10.0,
-            (approach - np.array([0.0, 0.0, -1.0])) * 3.0,
+            (approach - down) * 3.0,
         ])
 
     yaw = math.atan2(y, x)
+    # the seed's j1 must lie inside the joint-1 limits ([-2.9671, 2.9671]):
+    # for targets whose bearing is near +/-pi the raw yaw would exceed them
+    # and least_squares would reject the seed outright
+    j1 = yaw - 2 * math.pi if yaw > 2.9671 else yaw
+    j1 = j1 + 2 * math.pi if j1 < -2.9671 else j1
     seeds = [
-        [yaw, -0.6, 1.8, 0.0, 1.0, 0.0],
-        [yaw, -0.9, 1.5, 0.0, 1.2, 0.0],
-        [yaw, -0.3, 2.0, 0.0, 0.8, 0.0],
+        [j1, -0.6, 1.8, 0.0, 1.0, 0.0],
+        [j1, -0.9, 1.5, 0.0, 1.2, 0.0],
+        [j1, -0.3, 2.0, 0.0, 0.8, 0.0],
     ]
+    if seed is not None:
+        seeds.insert(0, list(seed))
     # KUKA Agilus KR 16 R1100-3 joint limits (rad) from kuka_agilus_support URDF
     lo = [-2.9671, -3.4034, -2.0071, -3.4907, -2.0944, -6.1087]
     hi = [2.9671, 0.9599, 2.8798, 3.4907, 2.0944, 6.1087]
@@ -152,6 +192,98 @@ def ik_top_down(x, y, z_grasp):
             continue
         if r.cost < 1e-5 and (best is None or r.cost < best.cost):
             best = r
+    if best is None:
+        return None
+    return [float(v) for v in best.x]
+
+
+def ik_grasp(x, y, z_grasp, close_dir, seed=None):
+    """Numeric IK: grasp point at (x,y,z), fingers down, closing axis
+    parallel to close_dir.
+
+    close_dir is a horizontal unit vector the gripper's finger closing axis
+    must be parallel to (grasp parallel to the object). Both signs of the
+    axis are equivalent (symmetric fingers), so each seed is tried with both.
+    Returns [j1..j6] or None if no converged solution.
+
+    seed: a previous solution for a nearby pose. When given it is tried
+    first (with the close-axis sign matching its own geometry) and guarantees
+    a solution on the same joint-space branch, so consecutive moves
+    interpolate smoothly instead of flipping the wrist and colliding.
+    """
+    import numpy as np
+    from scipy.optimize import least_squares
+
+    target = np.array([x, y, z_grasp])
+    down = np.array([0.0, 0.0, -1.0])
+    cd = np.asarray(close_dir, dtype=float)
+    n = np.linalg.norm(cd)
+    cd = cd / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+
+    def resid(q, close):
+        pos, approach, _close = _fk(q)
+        return np.concatenate([
+            (pos - target) * 10.0,
+            (approach - down) * 3.0,
+            (_close - close) * 3.0,
+        ])
+
+    # j1 seed = the target's bearing (the arm reaches (x,y) with j1 pointing
+    # at it), NOT the closing-axis yaw — that is handled by the wrist.
+    # Wrap into the joint-1 range [-2.9671, 2.9671] so seeds near +/-pi are
+    # still valid starting points instead of being rejected outright.
+    yaw = math.atan2(y, x)
+    j1 = yaw - 2 * math.pi if yaw > 2.9671 else yaw
+    j1 = j1 + 2 * math.pi if j1 < -2.9671 else j1
+    seeds = [
+        [j1, -0.6, 1.8, 0.0, 1.0, 0.0],
+        [j1, -0.9, 1.5, 0.0, 1.2, 0.0],
+        [j1, -0.3, 2.0, 0.0, 0.8, 0.0],
+        [j1, -0.6, 1.8, 0.0, 1.0, math.pi],
+    ]
+    if seed is not None:
+        # Continuation: the seed is a solution for a nearby (typically
+        # APPROACH_CLEARANCE higher) pose. Walk the target height down to the
+        # requested z in small increments, re-solving from the previous step,
+        # so the optimizer never takes a big jump and flips to the mirrored
+        # joint-space branch (j4 0 <-> -pi), which would make the descend
+        # swing through the tray. Falls back to the fixed seeds if any step
+        # fails to converge.
+        s = list(seed)
+        close = cd if _ik_seed_matches(_fk(s)[2], cd) else -cd
+        z0 = _fk(s)[0][2]
+        steps = max(1, int(math.ceil(abs(z_grasp - z0) / 0.05)))
+        cont_ok = True
+        for i in range(1, steps + 1):
+            target[2] = z0 + (z_grasp - z0) * i / steps
+            try:
+                r = least_squares(resid, s, args=(close,), bounds=(lo, hi),
+                                  xtol=1e-10, max_nfev=300)
+            except Exception:
+                r = None
+            if r is None or r.cost >= 1e-5:
+                cont_ok = False
+                break
+            s = r.x
+        # restore the requested target — the loop above mutates target[2],
+        # and the fallback seeds below must solve for the original z, not
+        # some intermediate continuation height
+        target[2] = z_grasp
+        if cont_ok:
+            return [float(v) for v in s]
+    # KUKA Agilus KR 16 R1100-3 joint limits (rad) from kuka_agilus_support URDF
+    lo = [-2.9671, -3.4034, -2.0071, -3.4907, -2.0944, -6.1087]
+    hi = [2.9671, 0.9599, 2.8798, 3.4907, 2.0944, 6.1087]
+    best = None
+    for s in seeds:
+        for close in (cd, -cd):
+            try:
+                r = least_squares(resid, s, args=(close,), bounds=(lo, hi),
+                                  xtol=1e-10, max_nfev=300)
+            except Exception:
+                continue
+            if r.cost < 1e-5 and (best is None or r.cost < best.cost):
+                best = r
     if best is None:
         return None
     return [float(v) for v in best.x]
@@ -173,6 +305,9 @@ class Orchestrator(Node):
         self._get_pose = self.create_client(GetObjectPose,
                                             "world_model/get_object_pose",
                                             callback_group=self._cb)
+        self._get_grasp_pose = self.create_client(GetGraspPose,
+                                                  "world_model/get_grasp_pose",
+                                                  callback_group=self._cb)
 
         # DetachableJoint attach/detach (bridged to gz) — reliable grasp in
         # bullet-featherstone, which ignores contact friction for grasping.
@@ -214,7 +349,26 @@ class Orchestrator(Node):
         if not res.found:
             return None, f"object '{obj_id}' not known to world model"
         p = res.object.pose.pose.position
-        return (p.x, p.y, p.z, res.object.size), ""
+        return (p.x, p.y, p.z, res.object.size, res.object.kind), ""
+
+    def _grasp_pose(self, obj_id, timeout=5.0):
+        """Grasp pose from the world model: grasp point + orientation with
+        the gripper parallel to the object. Returns (PoseStamped, "") or
+        (None, err)."""
+        if not self._get_grasp_pose.wait_for_service(timeout_sec=timeout):
+            return None, "grasp pose service unavailable"
+        fut = self._get_grasp_pose.call_async(
+            GetGraspPose.Request(object_id=obj_id))
+        t0 = time.monotonic()
+        while not fut.done():
+            if time.monotonic() - t0 > timeout:
+                return None, "grasp pose query timed out"
+            time.sleep(0.05)
+        res = fut.result()
+        if not res.found:
+            return None, res.message
+        self.get_logger().info(f"grasp pose for '{obj_id}': {res.message}")
+        return res.grasp_pose, ""
 
     def _attach(self, obj_id):
         """Attach obj to the gripper ONLY if it is really between the fingers.
@@ -228,8 +382,8 @@ class Orchestrator(Node):
         pose, err = self._object_pose(obj_id)
         if pose is None:
             return False, err
-        x, y, z, _ = pose
-        grasp_point, _ = _fk(self._joint_state)
+        x, y, z, _, _ = pose
+        grasp_point, _, _ = _fk(self._joint_state)
         gx, gy, gz = grasp_point
         d = math.dist((x, y, z), (gx, gy, gz))
         if d > ATTACH_PROXIMITY:
@@ -346,26 +500,48 @@ class Orchestrator(Node):
         return (name, lambda: self._call(self._move, goal))
 
     def _pick_steps(self, obj_id):
-        pose, err = self._object_pose(obj_id)
-        if pose is None:
+        gpose, err = self._grasp_pose(obj_id)
+        if gpose is None:
             self._ground_err = err
             return None
-        x, y, z, size = pose
-        grasp_z = z + 0.005            # slightly above object center
-        jl_app = ik_top_down(x, y, grasp_z + APPROACH_CLEARANCE)
-        jl_grasp = ik_top_down(x, y, grasp_z)
-        if jl_app is None or jl_grasp is None:
-            self._ground_err = f"'{obj_id}' at ({x:.2f},{y:.2f},{z:.2f}) unreachable"
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+        p = gpose.pose.position
+        q = gpose.pose.orientation
+        # gripper +x = finger closing axis (parallel to the object's axes)
+        close_dir = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()[:, 0]
+        x, y, z_grasp = p.x, p.y, p.z
+        # Pre-close before the descend: fully open fingers span ~12.4 cm and
+        # jam into the tray walls when the cube slid near one. At PRE_CLOSE
+        # the pad gap is ~7.3 cm — still wider than the 5 cm cube, but it
+        # fits a 16 cm tray interior even with the cube off-center.
+        jl_app = ik_grasp(x, y, z_grasp + PRE_CLOSE_DIP + APPROACH_CLEARANCE,
+                          close_dir)
+        # The fingertips sweep PRE_CLOSE_DIP further down at the pre-closed
+        # angle, so aim the grasp point that much higher. Seeded from the
+        # approach solution so both poses stay on one joint-space branch and
+        # the descend interpolates smoothly (no wrist flip into the tray).
+        jl_grasp = ik_grasp(x, y, z_grasp + PRE_CLOSE_DIP, close_dir,
+                            seed=jl_app)
+        # Same pose as the approach, but seeded from the grasp so the lift
+        # does not flip the wrist while holding the cube.
+        jl_lift = ik_grasp(x, y, z_grasp + PRE_CLOSE_DIP + APPROACH_CLEARANCE,
+                           close_dir, seed=jl_grasp)
+        if None in (jl_app, jl_grasp, jl_lift):
+            self._ground_err = (f"'{obj_id}' at ({x:.2f},{y:.2f},{z_grasp:.2f}) "
+                                "unreachable with gripper parallel to object")
             return None
         return [
             ("detach", lambda: self._detach()),
             ("open_gripper", lambda: self._call(self._release, Release.Goal())),
+            (f"pre_close:{obj_id}", lambda: self._call(
+                self._grasp, Grasp.Goal(position=PRE_CLOSE, max_effort=40.0))),
             self._move_step(f"approach:{obj_id}", jl_app),
             self._move_step(f"descend:{obj_id}", jl_grasp, 2.5),
             (f"grasp:{obj_id}", lambda: self._grasp_step(
                 GRIPPER_CLOSED_ON_CUBE, 120.0)),
             (f"attach:{obj_id}", lambda: self._attach(obj_id)),
-            self._move_step(f"lift:{obj_id}", jl_app, 6.0),
+            self._move_step(f"lift:{obj_id}", jl_lift, 6.0),
         ]
 
     def _place_steps(self, tgt_id):
@@ -373,20 +549,41 @@ class Orchestrator(Node):
         if pose is None:
             self._ground_err = err
             return None
-        x, y, z, size = pose
-        drop_z = z + (size[2] if len(size) >= 3 else 0.08) + 0.06
+        x, y, z, size, kind = pose
+        if kind == "tray":
+            # Support surface = the tray's interior floor. Its 2 cm-thick
+            # floor box is centered at the model origin, so the top is 1 cm
+            # above it.
+            support = z + 0.01
+        else:
+            # Support surface = the target's top.
+            support = z + size[2] / 2
+        # drop_z is the GRASP-POINT height (midpoint of the fingertip link
+        # origins, same convention as the pick). The glued cube hangs ~17 mm
+        # below it, so this places the cube's bottom ~1.5 cm above the support
+        # and keeps the closed fingertips 9 mm clear of it (same geometry
+        # constants as GRASP_RAISE in the world model — keep in sync).
+        drop_z = support + 0.0555
         jl_above = ik_top_down(x, y, drop_z + 0.10)
-        jl_drop = ik_top_down(x, y, drop_z)
-        if jl_above is None or jl_drop is None:
+        # Seeded from jl_above so the lower stays on the same branch.
+        jl_drop = ik_top_down(x, y, drop_z, seed=jl_above)
+        # Seeded from jl_drop so the retreat does not flip the wrist while
+        # pulling the open fingers back out of the tray.
+        jl_retreat = ik_top_down(x, y, drop_z + 0.10, seed=jl_drop)
+        if None in (jl_above, jl_drop, jl_retreat):
             self._ground_err = f"'{tgt_id}' at ({x:.2f},{y:.2f},{z:.2f}) unreachable"
             return None
         return [
-            ("detach", lambda: self._detach()),
             self._move_step(f"transfer:{tgt_id}", jl_above),
-            self._move_step(f"lower:{tgt_id}", jl_drop, 2.5),
+            # Detach here, before lowering: while the cube hangs free between
+            # the squeezed fingertips it yields when the fingers open, so the
+            # release is not blocked. Detaching at the drop pose would pin the
+            # cube against the support and the pad friction (mu=1e5) would
+            # stall the knuckle instead.
             (f"detach:{tgt_id}", lambda: self._detach()),
+            self._move_step(f"lower:{tgt_id}", jl_drop, 2.5),
             (f"release:{tgt_id}", lambda: self._call(self._release, Release.Goal())),
-            self._move_step(f"retreat:{tgt_id}", jl_above, 2.5),
+            self._move_step(f"retreat:{tgt_id}", jl_retreat, 2.5),
         ]
 
     # ------------------------------------------------------------- executor
@@ -483,6 +680,7 @@ class Orchestrator(Node):
             self.get_logger().info(f"  step {i+1}/{len(plan)}: {name}")
             ok, msg = fn()
             if not ok:
+                self.get_logger().warn(f"  step {i+1}/{len(plan)}: {name} FAILED: {msg}")
                 self._detach()   # best effort: clear any stale grip glue
                 return False, ERR_SKILL, f"step '{name}' failed: {msg}", name
         return True, OK, f"task '{task}' completed ({len(plan)} steps)", ""

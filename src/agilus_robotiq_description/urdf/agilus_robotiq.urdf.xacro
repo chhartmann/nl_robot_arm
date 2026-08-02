@@ -42,7 +42,7 @@
        gripper "look up". The rotation maps the gripper's +Z (finger axis)
        to the flange's +X, i.e. forward (toward the table) at home, with the
        fingers opening horizontally (world +Y). -->
-  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_85_macro.urdf.xacro"/>
+  <xacro:include filename="$(find agilus_robotiq_description)/urdf/robotiq_2f_85_macro_collisionfix.urdf.xacro"/>
   <xacro:robotiq_gripper
       name="${prefix}robotiq_2f85"
       prefix="${prefix}"
@@ -134,7 +134,11 @@
   <!-- ============ grasp: detachable-joint attach on close ============ -->
   <!-- bullet-featherstone ignores <ode> friction, so reliable pick uses a
        DetachableJoint: starts detached, attaches red_cube to the left
-       fingertip on /gripper/attach, releases on /gripper/detach. -->
+       fingertip on /gripper/attach, releases on /gripper/detach.
+       NOTE: gz-sim8 ignores <suppress_initial_attach> — its attachRequested
+       flag defaults to true, so the plugin welds red_cube to the fingertip
+       on the first physics tick after spawn. The spawn launch file undoes
+       this (detach + pose reset) a few seconds after the robot spawns. -->
   <gazebo>
     <plugin filename="gz-sim-detachable-joint-system"
             name="gz::sim::systems::DetachableJoint">
@@ -144,7 +148,6 @@
       <attach_topic>/gripper/attach</attach_topic>
       <detach_topic>/gripper/detach</detach_topic>
       <output_topic>/gripper/attach_state</output_topic>
-      <suppress_initial_attach>true</suppress_initial_attach>
     </plugin>
   </gazebo>
 
