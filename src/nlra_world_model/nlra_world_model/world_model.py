@@ -45,7 +45,9 @@ WORLD_FRAME = "world"
 # tips sweep ~13.5 mm further down while closing; aiming the grasp point at
 # the object's center would therefore drive the fingertips into the table.
 # Raise it above the object's bottom (its support plane for tabletop
-# objects): 33 + 13.5 + ~9 mm of table clearance.
+# objects): 33 + 13.5 + ~9 mm of table clearance. This is gripper/table
+# geometry only — it does not depend on the object's size, so the same raise
+# applies to any future object.
 GRASP_RAISE = 0.0555
 
 

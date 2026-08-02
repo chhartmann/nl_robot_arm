@@ -30,8 +30,6 @@ from rclpy.node import Node
 from nlra_interfaces.action import ExecuteTask, Grasp, Home, MoveJoints, Release
 from nlra_interfaces.srv import GetGraspPose, GetObjectPose
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Empty
-
 OK = 0
 ERR_UNKNOWN_TASK = 1
 ERR_GROUNDING = 2
@@ -55,28 +53,32 @@ JOINT_INDEX = {
 # grasp point offset below tool0 (gripper fingers) along tool z
 GRASP_OFFSET = 0.15
 
-# knuckle rad past first pad contact with a 5 cm cube (~0.70): the gripper
-# stalls on the cube before reaching this target, which is what the stall
-# detector in the grasp skill uses to report "object detected".
-#
-# The value is just past contact (0.73 -> pads sink ~3 mm): the detachable
-# joint glues the cube anyway, so a deep preload is not needed. A deep
-# squeeze (0.78, ~9 mm sink) made the pad reaction forces on a glued cube
-# blow the knuckle past its 0.8 limit (fingers crossed over, cube dropped).
-GRIPPER_CLOSED_ON_CUBE = 0.73
-# Pre-close knuckle angle before the descend (pad gap ~7.3 cm): narrow enough
-# to fit a 16 cm tray interior with the cube off-center, wide enough to clear
-# the 5 cm cube. The fingertips sweep PRE_CLOSE_DIP further down at this
-# angle, which the descend target compensates for.
-PRE_CLOSE = 0.5
-PRE_CLOSE_DIP = 0.0125
+# The gripper closes toward the FULLY CLOSED knuckle angle and stalls on
+# whatever object blocks it — the stall angle adapts to the object's size.
+# But closing to 0.8 (with a big residual error) makes the gz velocity-based
+# position servo press the object with full force and eject it. Instead the
+# grasp targets a small angle PAST the contact angle (see
+# _grasp_target_angle): the residual error is small, so the servo presses the
+# object gently and holds it by contact friction.
+GRIPPER_FULLY_CLOSED = 0.8     # rad, knuckle fully closed
+# Firm-grip effort: the knuckle's URDF effort limit is 50 N, the maximum
+# squeeze the joint can apply regardless of the requested value.
+GRIPPER_GRASP_EFFORT = 50.0
+# Knuckle angle -> finger-pad gap calibration, measured in sim:
+#   pad_gap(cm) = 12.69 - 11.03 * angle(rad)
+# (fingertip link origins measured at 0.2/0.8 rad; 6 mm pad inset per side).
+# The fingers contact an object of width w when pad_gap == w. This is gripper
+# geometry only — keep in sync if the gripper URDF changes.
+GRASP_PRESS_DELTA = 0.025      # rad past contact -> gentle sustained press
 APPROACH_CLEARANCE = 0.18      # m above grasp height for approach pose
-# Max 3D distance between the cube center and the current FK grasp point for
-# the detachable-joint attach to be allowed. gz-sim's DetachableJoint has NO
-# proximity check of its own: it rigidly glues the child model on any
-# /gripper/attach message, wherever it is. This guard prevents the cube from
-# being dragged along when the gripper closed on air or a pose was stale.
-ATTACH_PROXIMITY = 0.09        # m
+# Grasp-point height above an object's bottom — same constant as GRASP_RAISE
+# in the world model (keep in sync): fingertip boxes + closing sweep +
+# support clearance. Gripper/table geometry only, independent of object size.
+GRASP_RAISE = 0.0555
+# An object held between the fingertips hangs ~17 mm below the grasp point
+# (grasp point = midpoint of the fingertip link origins; empirical, measured
+# on the cube). Used to aim the drop height in the place skill.
+GRASP_HANG = 0.017
 
 _urdf = None
 
@@ -309,11 +311,6 @@ class Orchestrator(Node):
                                                   "world_model/get_grasp_pose",
                                                   callback_group=self._cb)
 
-        # DetachableJoint attach/detach (bridged to gz) — reliable grasp in
-        # bullet-featherstone, which ignores contact friction for grasping.
-        self._attach_pub = self.create_publisher(Empty, "/gripper/attach", 1)
-        self._detach_pub = self.create_publisher(Empty, "/gripper/detach", 1)
-
         # latest arm joint positions (for move_joints: unspecified joints stay)
         self._joint_state = None
         self._js_sub = self.create_subscription(
@@ -370,35 +367,6 @@ class Orchestrator(Node):
         self.get_logger().info(f"grasp pose for '{obj_id}': {res.message}")
         return res.grasp_pose, ""
 
-    def _attach(self, obj_id):
-        """Attach obj to the gripper ONLY if it is really between the fingers.
-
-        gz-sim's DetachableJoint glues the child model on any attach message
-        regardless of distance, so we verify against the live world-model pose
-        before publishing.
-        """
-        if self._joint_state is None:
-            return False, "no joint state — cannot verify grip proximity"
-        pose, err = self._object_pose(obj_id)
-        if pose is None:
-            return False, err
-        x, y, z, _, _ = pose
-        grasp_point, _, _ = _fk(self._joint_state)
-        gx, gy, gz = grasp_point
-        d = math.dist((x, y, z), (gx, gy, gz))
-        if d > ATTACH_PROXIMITY:
-            return False, (f"refusing attach: {obj_id} is {d*100:.1f} cm from "
-                           f"the grasp point ({gx:.2f},{gy:.2f},{gz:.2f}) — "
-                           "not in the gripper")
-        self._attach_pub.publish(Empty())
-        time.sleep(0.5)   # let gz create the fixed joint before lifting
-        return True, "attached"
-
-    def _detach(self):
-        self._detach_pub.publish(Empty())
-        time.sleep(0.5)   # let gz remove the joint before releasing fingers
-        return True, "detached"
-
     def _grasp_step(self, position, max_effort):
         """Close the gripper; succeed only if an object was actually caught."""
         ok, msg, res = self._call_raw(
@@ -407,7 +375,7 @@ class Orchestrator(Node):
             return False, msg
         if res is None or not res.object_detected:
             return False, "gripper closed without contact (no object between fingers)"
-        return True, "object detected in gripper"
+        return True, "object firmly gripped; holding pressure until release"
 
     def _call(self, client, goal, timeout=60.0):
         ok, msg, _ = self._call_raw(client, goal, timeout)
@@ -440,9 +408,8 @@ class Orchestrator(Node):
     def _plan_for(self, task, args):
         """Return list of (step_name, callable) or None."""
         if task == "home":
-            return [("detach", lambda: self._detach()),
-                    ("home", lambda: self._call(
-                        self._home, Home.Goal(open_gripper=True)))]
+            return [("home", lambda: self._call(
+                self._home, Home.Goal(open_gripper=True)))]
 
         if task == "pick":
             obj = args.get("object_id", "red_cube")
@@ -490,14 +457,26 @@ class Orchestrator(Node):
             except (TypeError, ValueError):
                 self._ground_err = f"joint '{name}': angle {deg!r} is not a number"
                 return None
-        return [("detach", lambda: self._detach()),
-                self._move_step("move_joints", pos, 5.0)]
+        return [self._move_step("move_joints", pos, 5.0)]
 
     def _move_step(self, name, positions, duration=4.0):
         goal = MoveJoints.Goal()
         goal.positions = positions
         goal.duration = float(duration)
         return (name, lambda: self._call(self._move, goal))
+
+    def _grasp_target_angle(self, width):
+        """Knuckle angle that presses an object of the given width.
+
+        The fingers contact the object when the pad gap equals its width.
+        Returning a target a small angle PAST the contact angle keeps a small
+        residual position error, so the gz velocity-based position servo
+        presses the object with a gentle sustained force instead of ejecting
+        it (closing all the way to 0.8 would press at full velocity).
+        """
+        width_cm = float(width) * 100.0
+        a_contact = (12.69 - width_cm) / 11.03
+        return min(GRIPPER_FULLY_CLOSED, max(0.0, a_contact + GRASP_PRESS_DELTA))
 
     def _pick_steps(self, obj_id):
         gpose, err = self._grasp_pose(obj_id)
@@ -511,36 +490,34 @@ class Orchestrator(Node):
         # gripper +x = finger closing axis (parallel to the object's axes)
         close_dir = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()[:, 0]
         x, y, z_grasp = p.x, p.y, p.z
-        # Pre-close before the descend: fully open fingers span ~12.4 cm and
-        # jam into the tray walls when the cube slid near one. At PRE_CLOSE
-        # the pad gap is ~7.3 cm — still wider than the 5 cm cube, but it
-        # fits a 16 cm tray interior even with the cube off-center.
-        jl_app = ik_grasp(x, y, z_grasp + PRE_CLOSE_DIP + APPROACH_CLEARANCE,
-                          close_dir)
-        # The fingertips sweep PRE_CLOSE_DIP further down at the pre-closed
-        # angle, so aim the grasp point that much higher. Seeded from the
-        # approach solution so both poses stay on one joint-space branch and
-        # the descend interpolates smoothly (no wrist flip into the tray).
-        jl_grasp = ik_grasp(x, y, z_grasp + PRE_CLOSE_DIP, close_dir,
-                            seed=jl_app)
+        # The gripper stays FULLY OPEN through the approach and the descend:
+        # the FK is computed with the knuckle open, so the descend target is
+        # the grasp point itself; closing starts only at the grasp pose.
+        jl_app = ik_grasp(x, y, z_grasp + APPROACH_CLEARANCE, close_dir)
+        # Seeded from the approach so both poses stay on one joint-space
+        # branch and the descend interpolates smoothly (no wrist flip).
+        jl_grasp = ik_grasp(x, y, z_grasp, close_dir, seed=jl_app)
         # Same pose as the approach, but seeded from the grasp so the lift
-        # does not flip the wrist while holding the cube.
-        jl_lift = ik_grasp(x, y, z_grasp + PRE_CLOSE_DIP + APPROACH_CLEARANCE,
-                           close_dir, seed=jl_grasp)
+        # does not flip the wrist while holding the object.
+        jl_lift = ik_grasp(x, y, z_grasp + APPROACH_CLEARANCE, close_dir,
+                           seed=jl_grasp)
         if None in (jl_app, jl_grasp, jl_lift):
             self._ground_err = (f"'{obj_id}' at ({x:.2f},{y:.2f},{z_grasp:.2f}) "
                                 "unreachable with gripper parallel to object")
             return None
+        # Object width along the closing axis -> gentle press target angle.
+        pose, perr = self._object_pose(obj_id)
+        width = pose[3][0] if pose is not None else 0.05
+        grasp_pos = self._grasp_target_angle(width)
+        self.get_logger().info(
+            f"grasp target angle for '{obj_id}' (w={width*100:.1f} cm): "
+            f"{grasp_pos:.3f} rad")
         return [
-            ("detach", lambda: self._detach()),
             ("open_gripper", lambda: self._call(self._release, Release.Goal())),
-            (f"pre_close:{obj_id}", lambda: self._call(
-                self._grasp, Grasp.Goal(position=PRE_CLOSE, max_effort=40.0))),
             self._move_step(f"approach:{obj_id}", jl_app),
             self._move_step(f"descend:{obj_id}", jl_grasp, 2.5),
             (f"grasp:{obj_id}", lambda: self._grasp_step(
-                GRIPPER_CLOSED_ON_CUBE, 120.0)),
-            (f"attach:{obj_id}", lambda: self._attach(obj_id)),
+                grasp_pos, GRIPPER_GRASP_EFFORT)),
             self._move_step(f"lift:{obj_id}", jl_lift, 6.0),
         ]
 
@@ -559,11 +536,13 @@ class Orchestrator(Node):
             # Support surface = the target's top.
             support = z + size[2] / 2
         # drop_z is the GRASP-POINT height (midpoint of the fingertip link
-        # origins, same convention as the pick). The glued cube hangs ~17 mm
-        # below it, so this places the cube's bottom ~1.5 cm above the support
-        # and keeps the closed fingertips 9 mm clear of it (same geometry
-        # constants as GRASP_RAISE in the world model — keep in sync).
-        drop_z = support + 0.0555
+        # origins, same convention as the pick). An attached object's center
+        # hangs GRASP_HANG below it, so its bottom sits at
+        # drop_z - GRASP_HANG - size[2]/2. Aim the bottom at the support, but
+        # never lower the fingers below GRASP_RAISE so the closed fingertips
+        # keep their clearance (same geometry constants as the world model —
+        # keep in sync).
+        drop_z = support + max(GRASP_RAISE, GRASP_HANG + size[2] / 2.0)
         jl_above = ik_top_down(x, y, drop_z + 0.10)
         # Seeded from jl_above so the lower stays on the same branch.
         jl_drop = ik_top_down(x, y, drop_z, seed=jl_above)
@@ -575,12 +554,9 @@ class Orchestrator(Node):
             return None
         return [
             self._move_step(f"transfer:{tgt_id}", jl_above),
-            # Detach here, before lowering: while the cube hangs free between
-            # the squeezed fingertips it yields when the fingers open, so the
-            # release is not blocked. Detaching at the drop pose would pin the
-            # cube against the support and the pad friction (mu=1e5) would
-            # stall the knuckle instead.
-            (f"detach:{tgt_id}", lambda: self._detach()),
+            # The cube is held by the squeeze force (effort grip) during the
+            # transfer; releasing happens at the drop pose via the release
+            # skill, which opens the fingers and lets the cube drop.
             self._move_step(f"lower:{tgt_id}", jl_drop, 2.5),
             (f"release:{tgt_id}", lambda: self._call(self._release, Release.Goal())),
             self._move_step(f"retreat:{tgt_id}", jl_retreat, 2.5),
@@ -671,7 +647,6 @@ class Orchestrator(Node):
             f"task '{task}' attempt {attempt}/{max_attempts}: {len(plan)} steps")
         for i, (name, fn) in enumerate(plan):
             if goal_handle.is_cancel_requested:
-                self._detach()   # never leave an object glued to the arm
                 return False, ERR_CANCELLED, "cancelled", name
             fb.step = name
             fb.step_index = i
@@ -681,7 +656,6 @@ class Orchestrator(Node):
             ok, msg = fn()
             if not ok:
                 self.get_logger().warn(f"  step {i+1}/{len(plan)}: {name} FAILED: {msg}")
-                self._detach()   # best effort: clear any stale grip glue
                 return False, ERR_SKILL, f"step '{name}' failed: {msg}", name
         return True, OK, f"task '{task}' completed ({len(plan)} steps)", ""
 

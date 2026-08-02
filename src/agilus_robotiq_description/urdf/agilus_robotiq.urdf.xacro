@@ -75,10 +75,19 @@
     <xacro:arm_joint num="5" init="0.0"/>
     <xacro:arm_joint num="6" init="0.0"/>
 
-    <!-- gripper: single actuated knuckle + 5 mimic joints. gz_ros2_control
-         applies the mimic coupling in software (the default physics engine does
-         NOT enforce URDF mimic constraints), so the followers must be declared
-         here with mimic params. Only the knuckle gets a command interface. -->
+    <!-- gripper: single actuated knuckle + 5 mimic joints, driven by a
+         POSITION command. gz_ros2_control implements position commands as
+         velocity setpoints (joint_velocity = position_proportional_gain *
+         error * update_rate), so the fingers are kinematically driven; the
+         followers are coupled by the gz_ros2_control SOFTWARE mimic (URDF
+         <mimic> tags; gz-sim's URDF->SDF conversion drops <mimic>, so physics
+         mimic is not available, and effort control of a software-mimicked
+         chain locks the knuckle — hence position control). When the fingers
+         block on an object, the controller goal never completes; the grasp
+         skill detects the stall and cancels the goal so the controller holds
+         the fingers at the object's width. The object is held by the
+         geometric trap (fingers locked narrower than the object) plus contact
+         friction — a physical grip, no virtual attachment. -->
     <joint name="${prefix}robotiq_85_left_knuckle_joint">
       <command_interface name="position">
         <param name="min">0.0</param>
@@ -131,24 +140,10 @@
     </plugin>
   </gazebo>
 
-  <!-- ============ grasp: detachable-joint attach on close ============ -->
-  <!-- bullet-featherstone ignores <ode> friction, so reliable pick uses a
-       DetachableJoint: starts detached, attaches red_cube to the left
-       fingertip on /gripper/attach, releases on /gripper/detach.
-       NOTE: gz-sim8 ignores <suppress_initial_attach> — its attachRequested
-       flag defaults to true, so the plugin welds red_cube to the fingertip
-       on the first physics tick after spawn. The spawn launch file undoes
-       this (detach + pose reset) a few seconds after the robot spawns. -->
-  <gazebo>
-    <plugin filename="gz-sim-detachable-joint-system"
-            name="gz::sim::systems::DetachableJoint">
-      <parent_link>robotiq_85_left_finger_tip_link</parent_link>
-      <child_model>red_cube</child_model>
-      <child_link>link</child_link>
-      <attach_topic>/gripper/attach</attach_topic>
-      <detach_topic>/gripper/detach</detach_topic>
-      <output_topic>/gripper/attach_state</output_topic>
-    </plugin>
-  </gazebo>
+  <!-- ============ grasp: physical grip, no virtual attachment ============ -->
+  <!-- The gripper is position-servo driven (see the comment on the knuckle
+       joint above); on an object the grasp skill holds the fingers at the
+       object's width (geometric trap + friction). The DetachableJoint that
+       used to weld red_cube to the fingertip is gone. -->
 
 </robot>

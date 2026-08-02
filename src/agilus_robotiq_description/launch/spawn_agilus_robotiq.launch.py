@@ -89,24 +89,6 @@ def generate_launch_description():
         output="screen",
     )
 
-    # gz-sim8's DetachableJoint welds the child model to the parent link on the
-    # first physics tick after the robot spawns: its attachRequested flag
-    # defaults to true and <suppress_initial_attach> is NOT supported by the
-    # plugin (silently ignored). Without this, red_cube is glued to the
-    # fingertip from t=0 and gets dragged off the table by the first arm move.
-    # A few seconds after spawn: detach it and restore its tabletop pose so
-    # the pick flow owns attach/detach.
-    cube_release = ExecuteProcess(
-        cmd=["bash", "-c",
-             "sleep 3; "
-             "gz topic -t /gripper/detach -m gz.msgs.Empty -p ''; "
-             "gz service -s /world/scene/set_pose --reqtype gz.msgs.Pose "
-             "--reptype gz.msgs.Boolean "
-             "--req 'name: \"red_cube\", position: {x: 0.55, y: 0.15, "
-             "z: 0.425}, orientation: {w: 1.0}}'"],
-        output="screen",
-    )
-
     jsb = Node(
         package="controller_manager", executable="spawner",
         arguments=["joint_state_broadcaster", "-c", "/controller_manager"],
@@ -139,5 +121,4 @@ def generate_launch_description():
                                            on_exit=[gz_gui, gz_headless])),
         RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[jsb])),
         RegisterEventHandler(OnProcessExit(target_action=jsb, on_exit=[arm, grip])),
-        RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[cube_release])),
     ])

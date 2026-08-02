@@ -11,7 +11,15 @@ controller_manager:
     arm_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
-    # Gripper: single-DOF position controller on the actuated knuckle
+    # Gripper: single-DOF position controller on the actuated knuckle.
+    # Position commands in gz_ros2_control are velocity setpoints, so the
+    # fingers are driven kinematically (the followers track via software
+    # mimic). On an object the goal never completes (the controller has no
+    # stall detection in position mode); the grasp skill detects the stall and
+    # cancels the goal, so the controller holds the fingers at the object's
+    # width — the object is held by the geometric trap plus contact friction
+    # (a physical grip, no virtual attachment) until a release goal preempts
+    # it.
     gripper_controller:
       type: position_controllers/GripperActionController
 

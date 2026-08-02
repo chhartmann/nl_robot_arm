@@ -154,7 +154,7 @@ verified in sim (headless, aarch64). As-built notes inline below.**
 ### Phase 6 — Robustness & polish — ✅ DONE
 - [x] `nlra_bringup`: **single `ros2 launch` file** for the whole stack (sim → NL), staged timers
 - [x] Orchestrator **retry with re-grounding** + **postcondition verification** (object actually at target via world model)
-- [x] **Grasp physics: DetachableJoint** attach/detach (bullet-featherstone ignores contact friction) — verified cube transported to tray, postcondition 5.1 cm
+- [x] **Grasp physics: physical (friction) grip.** The DetachableJoint virtual attach is gone. The gripper is a position-servo (gz_ros2_control velocity-based) drive; the grasp skill closes the fingers, detects the stall when an object blocks them, and cancels the goal so the controller holds the fingers at the object's width — the object is held by the geometric trap plus contact friction. The grasp target is calibrated per object width (knuckle-angle ↔ finger-gap mapping) so the fingers press gently instead of ejecting the object. Verified: cube physically transported to tray, postcondition passes.
 - [x] Honest NL failure reporting (no false success)
 - **Done when:** NL commands run reliably; failures reported clearly. ✅
 

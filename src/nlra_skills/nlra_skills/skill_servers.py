@@ -157,8 +157,17 @@ class SkillServers(Node):
         return OK, "ok"
 
     def _send_gripper(self, position, max_effort, goal_handle, fb_msg, fb_phase,
-                      timeout_s=15.0):
-        """Send gripper command, block until done. Returns (code, message, stalled, reached)."""
+                      timeout_s=15.0, keep_pressing=False):
+        """Send gripper command, block until done. Returns (code, message, stalled, reached).
+
+        Position-mode GripperActionController: a goal blocked by an object
+        never completes, so a stall is detected here from the knuckle no longer
+        moving. On a grasp stall the goal is cancelled, which makes the
+        controller hold the fingers at the object's width (geometric trap +
+        friction = physical grip) until a later goal (release) preempts it.
+        keep_pressing=True instead leaves the goal running, i.e. keeps
+        commanding the target — the old behaviour, which squeezed objects out.
+        """
         goal = GripperCommand.Goal()
         goal.command.position = float(position)
         goal.command.max_effort = float(max_effort)
@@ -180,18 +189,30 @@ class SkillServers(Node):
                 return ERR_CANCELLED, "cancelled", False, False
             # Stall detection: GripperActionController never finishes the goal
             # if an object blocks the fingers short of the target position.
-            # A knuckle that hasn't moved for >1.5s while the goal is pending
-            # means the gripper is squeezing something -> stalled grasp.
+            # A knuckle that hasn't moved for a while while the goal is
+            # pending means the gripper is squeezing something -> stalled
+            # grasp. On a stall we CANCEL the goal: the controller enters
+            # hold-position, so the fingers stop pressing and are locked at
+            # the object's width — the object is held by the geometric trap
+            # plus contact friction (a physical grip, no virtual attachment).
+            # (keep_pressing=True instead leaves the goal running so the
+            # closed position keeps being commanded — the old behaviour,
+            # which squeezed objects out of the fingers.)
             cur = self._joint_pos.get("robotiq_85_left_knuckle_joint")
             if cur is not None:
                 if last_pos is not None and abs(cur - last_pos) < 0.002:
                     if still_since is None:
                         still_since = time.monotonic()
-                    elif time.monotonic() - still_since > 1.5 and \
-                            time.monotonic() - t0 > 2.0:
+                    elif time.monotonic() - still_since > 0.5 and \
+                            time.monotonic() - t0 > 1.0:
+                        # The goal is still running here: the fingers stopped
+                        # short of the target position, so an object is
+                        # blocking them -> never "reached".
+                        reached = False
+                        if keep_pressing:
+                            return OK, "ok", True, reached
                         ctrl_handle.cancel_goal_async()
-                        reached = abs(cur - position) < 0.02
-                        return OK, "ok", not reached, reached
+                        return OK, "ok", True, reached
                 else:
                     still_since = None
                 last_pos = cur
@@ -268,12 +289,16 @@ class SkillServers(Node):
 
         code, msg, stalled, reached = self._send_gripper(
             pos, req.max_effort, goal_handle, fb, "closing")
-        # semantics: reaching target = closed on nothing; stalling early = object held
+        # semantics: reaching target = closed on nothing; stalling early =
+        # object held. On a stall the close goal is cancelled, so the
+        # controller holds the fingers at the object's width — the object is
+        # held by the geometric trap plus contact friction until the release
+        # goal preempts it.
         result.object_detected = stalled and not reached
         result.success = code == OK and (reached or stalled)
         result.error_code = code if code != OK else (OK if result.success else ERR_EXECUTION)
         result.message = msg if code != OK else (
-            "object detected (gripper stalled)" if result.object_detected
+            "object gripped (fingers holding at object width)" if result.object_detected
             else "closed to target (no object)")
         if result.success:
             goal_handle.succeed()

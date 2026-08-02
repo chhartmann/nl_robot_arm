@@ -14,7 +14,7 @@ on headless hosts it falls back to the inline terminal REPL.
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -47,9 +47,6 @@ def generate_launch_description():
             "/model/red_cube/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
             "/model/blue_box/pose_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
             "/model/table/pose_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
-            # gripper attach/detach: ROS std_msgs/Empty -> gz.msgs.Empty
-            "/gripper/attach@std_msgs/msg/Empty]gz.msgs.Empty",
-            "/gripper/detach@std_msgs/msg/Empty]gz.msgs.Empty",
         ],
         output="screen")
 
@@ -64,10 +61,27 @@ def generate_launch_description():
                         condition=IfCondition(nl))
     nl_gui = nl_gui_action(IfCondition(nl))
 
+    # A previous launch can leave delayed Python nodes orphaned after its
+    # parent is interrupted. Duplicate action servers make ActionClient match
+    # responses to the wrong process, producing misleading timeouts. Remove
+    # only this workspace's stack nodes before starting a fresh instance.
+    reset_stack = ExecuteProcess(
+        cmd=["bash", "-c", " && ".join([
+            "pkill -TERM -f '[n]lra_orchestrator/orchestrator' || true",
+            "pkill -TERM -f '[n]lra_skills/skill_servers' || true",
+            "pkill -TERM -f '[n]lra_world_model/world_model' || true",
+            "pkill -TERM -f '[n]lra_nl_interface/nl_interface' || true",
+            "pkill -TERM -f '[n]lra_nl_interface/nl_gui' || true",
+            "pkill -TERM -f '[p]arameter_bridge.*object_pose_bridge' || true",
+            "sleep 1",
+        ])],
+        output="screen")
+
     return LaunchDescription([
         DeclareLaunchArgument("gui", default_value="false"),
         DeclareLaunchArgument("world", default_value="tabletop_scene.sdf"),
         DeclareLaunchArgument("nl", default_value="true"),
+        reset_stack,
         sim,
         TimerAction(period=25.0, actions=[pose_bridge]),
         TimerAction(period=30.0, actions=[world_model, skills]),
