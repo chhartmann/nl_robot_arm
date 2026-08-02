@@ -53,10 +53,13 @@ def generate_launch_description():
     world_file = PathJoinSubstitution(
         [FindPackageShare(pkg), "worlds", LaunchConfiguration("world")]
     )
+    gui_config = PathJoinSubstitution(
+        [FindPackageShare(pkg), "config", "gui_front.config"]
+    )
 
     gz_gui = ExecuteProcess(
         cmd=["gz", "sim", "-r", "-v", "3", "--render-engine", render_engine,
-             world_file],
+             "--gui-config", gui_config, world_file],
         output="screen", condition=IfCondition(gui),
     )
     gz_headless = ExecuteProcess(
