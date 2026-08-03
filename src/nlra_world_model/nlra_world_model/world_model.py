@@ -41,14 +41,16 @@ CATALOG = {
 }
 WORLD_FRAME = "world"
 # Grasp point = midpoint of the two fingertip link origins (orchestrator FK).
-# The fingertip collision boxes extend 33 mm below those origins, and the
-# tips sweep ~13.5 mm further down while closing; aiming the grasp point at
-# the object's center would therefore drive the fingertips into the table.
-# Raise it above the object's bottom (its support plane for tabletop
-# objects): 33 + 13.5 + ~9 mm of table clearance. This is gripper/table
-# geometry only — it does not depend on the object's size, so the same raise
-# applies to any future object.
-GRASP_RAISE = 0.0555
+# The gripper's VISUAL fingertips extend 57 mm below those origins.  The
+# fingertip collision boxes match the full mesh bounds, including its 6 mm
+# extension above the tip-link origin,
+# and the tips sweep ~13.5 mm further down while closing. Aiming the grasp
+# point at the object's center would therefore drive the fingertips into the
+# table. Raise it above the object's bottom (its support plane for tabletop
+# objects): 57 (fingertip length) + 13.5 (closing sweep) + ~10 mm of table
+# clearance. This is gripper/table geometry only — it does not depend on the
+# object's size, so the same raise applies to any future object.
+GRASP_RAISE = 0.0805
 
 
 class WorldModel(Node):

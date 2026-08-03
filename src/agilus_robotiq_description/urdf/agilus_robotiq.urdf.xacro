@@ -84,10 +84,9 @@
          mimic is not available, and effort control of a software-mimicked
          chain locks the knuckle — hence position control). When the fingers
          block on an object, the controller goal never completes; the grasp
-         skill detects the stall and cancels the goal so the controller holds
-         the fingers at the object's width. The object is held by the
-         geometric trap (fingers locked narrower than the object) plus contact
-         friction — a physical grip, no virtual attachment. -->
+         skill detects the stall and leaves a small over-close command active
+         so the controller maintains normal force. The object is held by
+         physical contact friction — no virtual attachment. -->
     <joint name="${prefix}robotiq_85_left_knuckle_joint">
       <command_interface name="position">
         <param name="min">0.0</param>

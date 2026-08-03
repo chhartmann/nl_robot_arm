@@ -53,28 +53,37 @@ JOINT_INDEX = {
 # grasp point offset below tool0 (gripper fingers) along tool z
 GRASP_OFFSET = 0.15
 
-# The gripper closes toward the FULLY CLOSED knuckle angle and stalls on
-# whatever object blocks it — the stall angle adapts to the object's size.
-# But closing to 0.8 (with a big residual error) makes the gz velocity-based
-# position servo press the object with full force and eject it. Instead the
-# grasp targets a small angle PAST the contact angle (see
-# _grasp_target_angle): the residual error is small, so the servo presses the
-# object gently and holds it by contact friction.
+# The gripper closes toward a small angle PAST first pad contact and stalls on
+# whatever object blocks it — the stall angle adapts to the object's size. The
+# press preload must exceed the GripperActionController's goal_tolerance plus
+# the contact solver's minDepth compliance; otherwise the goal completes early
+# ("reached", no object) or the fingers keep creeping into the object. The
+# grasp skill detects the stall and leaves this low-force command active until
+# release, maintaining the normal force required for physical friction.
 GRIPPER_FULLY_CLOSED = 0.8     # rad, knuckle fully closed
 # Firm-grip effort: the knuckle's URDF effort limit is 50 N, the maximum
 # squeeze the joint can apply regardless of the requested value.
 GRIPPER_GRASP_EFFORT = 50.0
 # Knuckle angle -> finger-pad gap calibration, measured in sim:
-#   pad_gap(cm) = 12.69 - 11.03 * angle(rad)
-# (fingertip link origins measured at 0.2/0.8 rad; 6 mm pad inset per side).
+#   visual_pad_gap(cm) = 8.838 - 11.03 * angle(rad)
+# The 8.838 cm intercept includes the real asymmetric fingertip meshes.  The
+# rendered inner faces project 19.26 mm farther in on each side than the old
+# simplified collision boxes, so using the former 12.69 cm calibration drove
+# the *visual* claws through a 5 cm cube.
 # The fingers contact an object of width w when pad_gap == w. This is gripper
 # geometry only — keep in sync if the gripper URDF changes.
-GRASP_PRESS_DELTA = 0.025      # rad past contact -> gentle sustained press
+# Keep a modest position error behind the object: it must exceed both the
+# controller tolerance and Gazebo's contact compliance, otherwise the first
+# close only touches the cube and cannot develop enough normal force to hold
+# it during the lift.  This maps to about 2.8 mm of additional pad closure,
+# while remaining far below a full-close command that could eject the cube.
+GRASP_PRESS_DELTA = 0.025      # rad past contact -> sustained holding press
 APPROACH_CLEARANCE = 0.18      # m above grasp height for approach pose
 # Grasp-point height above an object's bottom — same constant as GRASP_RAISE
-# in the world model (keep in sync): fingertip boxes + closing sweep +
-# support clearance. Gripper/table geometry only, independent of object size.
-GRASP_RAISE = 0.0555
+# in the world model (keep in sync): visual fingertip length (57 mm) +
+# closing sweep (13.5 mm) + support clearance (10 mm). Gripper/table geometry
+# only, independent of object size.
+GRASP_RAISE = 0.0805
 # An object held between the fingertips hangs ~17 mm below the grasp point
 # (grasp point = midpoint of the fingertip link origins; empirical, measured
 # on the cube). Used to aim the drop height in the place skill.
@@ -471,11 +480,12 @@ class Orchestrator(Node):
         The fingers contact the object when the pad gap equals its width.
         Returning a target a small angle PAST the contact angle keeps a small
         residual position error, so the gz velocity-based position servo
-        presses the object with a gentle sustained force instead of ejecting
-        it (closing all the way to 0.8 would press at full velocity).
+        presses the object gently; the grasp skill detects that the fingers
+        are blocked (stall) and retains that low-force command through the
+        transfer.
         """
         width_cm = float(width) * 100.0
-        a_contact = (12.69 - width_cm) / 11.03
+        a_contact = (8.838 - width_cm) / 11.03
         return min(GRIPPER_FULLY_CLOSED, max(0.0, a_contact + GRASP_PRESS_DELTA))
 
     def _pick_steps(self, obj_id):

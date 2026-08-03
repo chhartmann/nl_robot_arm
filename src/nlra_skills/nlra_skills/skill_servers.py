@@ -161,12 +161,12 @@ class SkillServers(Node):
         """Send gripper command, block until done. Returns (code, message, stalled, reached).
 
         Position-mode GripperActionController: a goal blocked by an object
-        never completes, so a stall is detected here from the knuckle no longer
-        moving. On a grasp stall the goal is cancelled, which makes the
-        controller hold the fingers at the object's width (geometric trap +
-        friction = physical grip) until a later goal (release) preempts it.
-        keep_pressing=True instead leaves the goal running, i.e. keeps
-        commanding the target — the old behaviour, which squeezed objects out.
+        never completes, so a stall is detected here from the knuckle no
+        longer making meaningful progress.  A caller can keep a deliberately
+        low-overclose command active after that stall, until a later release
+        command preempts it; this maintains the normal force needed for a
+        physical friction grip.  Calls that do not request that behavior
+        cancel the pending command at the stalled aperture.
         """
         goal = GripperCommand.Goal()
         goal.command.position = float(position)
@@ -181,30 +181,32 @@ class SkillServers(Node):
 
         result_future = ctrl_handle.get_result_async()
         t0 = time.monotonic()
-        last_pos = None
-        still_since = None
+        window_pos = None
+        window_t = None
         while not result_future.done():
             if goal_handle.is_cancel_requested:
                 ctrl_handle.cancel_goal_async()
                 return ERR_CANCELLED, "cancelled", False, False
             # Stall detection: GripperActionController never finishes the goal
             # if an object blocks the fingers short of the target position.
-            # A knuckle that hasn't moved for a while while the goal is
-            # pending means the gripper is squeezing something -> stalled
-            # grasp. On a stall we CANCEL the goal: the controller enters
-            # hold-position, so the fingers stop pressing and are locked at
-            # the object's width — the object is held by the geometric trap
-            # plus contact friction (a physical grip, no virtual attachment).
-            # (keep_pressing=True instead leaves the goal running so the
-            # closed position keeps being commanded — the old behaviour,
-            # which squeezed objects out of the fingers.)
+            # A grasp is stalled when the knuckle makes NO MEANINGFUL PROGRESS
+            # over a ~0.5 s window while the goal is still running — i.e. the
+            # fingers are blocked. We check window progress rather than the
+            # instantaneous velocity: the gz position servo keeps a small
+            # residual press force on a blocked knuckle, so it may creep at a
+            # slow, nearly constant rate instead of stopping dead. With
+            # keep_pressing=True we leave the low-overclose command
+            # active.  This retains a small normal force, hence physical
+            # friction, while the arm transfers the object.  Cancelling at
+            # this point merely freezes the aperture and can remove that
+            # force, letting a cube fall despite a successful stall.
             cur = self._joint_pos.get("robotiq_85_left_knuckle_joint")
+            now = time.monotonic()
             if cur is not None:
-                if last_pos is not None and abs(cur - last_pos) < 0.002:
-                    if still_since is None:
-                        still_since = time.monotonic()
-                    elif time.monotonic() - still_since > 0.5 and \
-                            time.monotonic() - t0 > 1.0:
+                if window_pos is None:
+                    window_pos, window_t = cur, now
+                elif now - window_t >= 0.5:
+                    if abs(cur - window_pos) < 0.003 and now - t0 > 1.0:
                         # The goal is still running here: the fingers stopped
                         # short of the target position, so an object is
                         # blocking them -> never "reached".
@@ -213,14 +215,12 @@ class SkillServers(Node):
                             return OK, "ok", True, reached
                         ctrl_handle.cancel_goal_async()
                         return OK, "ok", True, reached
-                else:
-                    still_since = None
-                last_pos = cur
-            if time.monotonic() - t0 > timeout_s:
+                    window_pos, window_t = cur, now
+            if now - t0 > timeout_s:
                 ctrl_handle.cancel_goal_async()
                 return ERR_EXECUTION, "gripper command timed out", False, False
             fb_msg.phase = fb_phase
-            fb_msg.progress = min(0.95, (time.monotonic() - t0) / timeout_s)
+            fb_msg.progress = min(0.95, (now - t0) / timeout_s)
             goal_handle.publish_feedback(fb_msg)
             time.sleep(0.1)
 
@@ -288,12 +288,12 @@ class SkillServers(Node):
         pos = min(max(float(req.position), GRIPPER_RANGE[0]), GRIPPER_RANGE[1])
 
         code, msg, stalled, reached = self._send_gripper(
-            pos, req.max_effort, goal_handle, fb, "closing")
+            pos, req.max_effort, goal_handle, fb, "closing",
+            keep_pressing=True)
         # semantics: reaching target = closed on nothing; stalling early =
-        # object held. On a stall the close goal is cancelled, so the
-        # controller holds the fingers at the object's width — the object is
-        # held by the geometric trap plus contact friction until the release
-        # goal preempts it.
+        # object held.  On a stall, retain the low-force close command until
+        # a release goal preempts it; this is a physical squeeze, not a
+        # virtual attachment.
         result.object_detected = stalled and not reached
         result.success = code == OK and (reached or stalled)
         result.error_code = code if code != OK else (OK if result.success else ERR_EXECUTION)

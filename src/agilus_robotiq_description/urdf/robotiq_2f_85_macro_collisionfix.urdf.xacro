@@ -140,9 +140,15 @@
                 </geometry>
             </visual>
             <collision>
-                <origin xyz="0.0 0.0 0.0165" rpy="0 0 0" />
+                <!-- Bounding box of left_finger_tip.dae.  This mesh is
+                     asymmetric: its inner face reaches 25.26 mm toward the
+                     object, while the former centred 12 mm collision box
+                     reached only 6 mm.  That discrepancy is why the visual
+                     claw could be deeply inside a cube after physics had
+                     already detected contact. -->
+                <origin xyz="-0.0096407 -0.0008000 0.0225077" rpy="0 0 0" />
                 <geometry>
-                    <box size="0.012 0.018 0.033" />
+                    <box size="0.0312358 0.0270000 0.0570155" />
                 </geometry>
                 <surface>
                     <friction>
@@ -177,9 +183,10 @@
                 </geometry>
             </visual>
             <collision>
-                <origin xyz="0.0 0.0 0.0165" rpy="0 0 0" />
+                <!-- Mirrored bounding box of right_finger_tip.dae. -->
+                <origin xyz="0.0096407 0.0000500 0.0225077" rpy="0 0 0" />
                 <geometry>
-                    <box size="0.012 0.018 0.033" />
+                    <box size="0.0312358 0.0270000 0.0570155" />
                 </geometry>
                 <surface>
                     <friction>
