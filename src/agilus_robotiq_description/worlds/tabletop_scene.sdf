@@ -18,6 +18,7 @@
     </plugin>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
     <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
     <!-- NOTE: PosePublisher is a per-model plugin and does nothing at world
          scope. Object poses are taken from the scene broadcaster's
          /world/scene/pose/info instead (bridged to ROS). -->

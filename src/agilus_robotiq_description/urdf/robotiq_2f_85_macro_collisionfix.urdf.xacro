@@ -31,7 +31,7 @@
                     <mesh filename="file://$(find robotiq_description)/meshes/visual/robotiq_base.dae" />
                 </geometry>
             </visual>
-            <collision>
+            <collision name="${prefix}robotiq_85_left_finger_tip_link_collision">
                 <geometry>
                     <box size="0.048 0.048 0.052" />
                 </geometry>
@@ -75,7 +75,7 @@
                     <mesh filename="file://$(find robotiq_description)/meshes/visual/left_finger.dae" />
                 </geometry>
             </visual>
-            <collision>
+            <collision name="${prefix}robotiq_85_right_finger_tip_link_collision">
                 <origin xyz="0.0 0.0 0.022" rpy="0 0 0" />
                 <geometry>
                     <box size="0.014 0.022 0.041" />

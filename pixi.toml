@@ -68,7 +68,7 @@ scripts = ["install/setup.sh"]
 [activation.env]
 # Gazebo Harmonic must find the gz_ros2_control system plugin, which RoboStack
 # installs into the pixi env lib dir (not a system path Gazebo searches).
-GZ_SIM_SYSTEM_PLUGIN_PATH = "$CONDA_PREFIX/lib"
+GZ_SIM_SYSTEM_PLUGIN_PATH = "$CONDA_PREFIX/lib:$PIXI_PROJECT_ROOT/install/nlra_gz_grasp_fix/lib"
 # Also expose ros_gz + other gz system plugins from the same place, plus the
 # colcon overlay: agilus_robotiq_description URDF meshes are referenced as
 # package:// URIs, which ros_gz rewrites to model://agilus_robotiq_description/...
