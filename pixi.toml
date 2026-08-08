@@ -41,6 +41,7 @@ pkg-config = "*"
 rosdep = "*"
 git = "*"
 python = "3.12.*"
+gdb = ">=17.2,<18"
 
 # ---------------------------------------------------------------------------
 # PyPI dependencies — resolved & installed by uv (pixi's native integration)

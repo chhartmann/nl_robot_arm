@@ -59,8 +59,10 @@ def generate_launch_description():
 
     world_model = Node(package="nlra_world_model", executable="world_model",
                        output="screen")
-    motion_planner = Node(package="nlra_motion_planner", executable="motion_planner",
-                          output="screen")
+    # NOTE: no standalone motion_planner node here — the skill servers embed
+    # their own MotionPlanner instance (same MoveItPy). A second standalone
+    # node would only duplicate the "nlra_motion_planner_moveit" node name
+    # and spin an unused MoveItPy.
     skills = Node(package="nlra_skills", executable="skill_servers",
                   output="screen")
     orchestrator = Node(package="nlra_orchestrator", executable="orchestrator",
@@ -81,7 +83,6 @@ def generate_launch_description():
             "pkill -TERM -f '[n]lra_world_model/world_model' || true",
             "pkill -TERM -f '[n]lra_nl_interface/nl_interface' || true",
             "pkill -TERM -f '[n]lra_nl_interface/nl_gui' || true",
-            "pkill -TERM -f '[n]lra_motion_planner/motion_planner' || true",
             "pkill -TERM -f '[m]ove_group' || true",
             "pkill -TERM -f '[p]arameter_bridge.*object_pose_bridge' || true",
             "sleep 1",
@@ -96,7 +97,6 @@ def generate_launch_description():
         sim,
         TimerAction(period=25.0, actions=[pose_bridge]),
         TimerAction(period=30.0, actions=[world_model, move_group]),
-        TimerAction(period=35.0, actions=[motion_planner]),
         TimerAction(period=40.0, actions=[skills]),
         TimerAction(period=45.0, actions=[orchestrator]),
         TimerAction(period=50.0, actions=[nl_interface]),

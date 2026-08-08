@@ -67,7 +67,9 @@ class SkillServers(Node):
             self, GripperCommand,
             "/gripper_controller/gripper_cmd", callback_group=self._cb)
 
-        # Motion planner for Cartesian/joint planning
+        # Motion planner for Cartesian/joint planning. MotionPlanner is its own
+        # rclpy Node (TF listener, /joint_states sub, arm action client), so it
+        # must be added to an executor — main() spins both nodes.
         self._motion_planner = MotionPlanner()
 
         ActionServer(self, MoveJoints, "skills/move_joints",
@@ -220,9 +222,13 @@ class SkillServers(Node):
                     if abs(cur - window_pos) < 0.003 and now - t0 > 1.0:
                         # The goal is still running here: the fingers stopped
                         # short of the target position, so an object is
-                        # blocking them -> never "reached".
-                        reached = False
-                        if keep_pressing:
+                        # blocking them -> never "reached".  Exception: the
+                        # fingers are already AT the commanded position
+                        # (e.g. an open command when the gripper is already
+                        # open): that is a genuine success, not a stall.
+                        at_target = abs(cur - float(position)) < 0.01
+                        reached = at_target
+                        if keep_pressing and not at_target:
                             return OK, "ok", True, reached
                         ctrl_handle.cancel_goal_async()
                         return OK, "ok", True, reached
@@ -556,6 +562,9 @@ def main(args=None):
     node = SkillServers()
     executor = MultiThreadedExecutor(num_threads=8)
     executor.add_node(node)
+    # The embedded MotionPlanner is a separate Node — it must be spun too or
+    # its TF listener / joint_states sub / arm action client never process.
+    executor.add_node(node._motion_planner)
     try:
         executor.spin()
     except KeyboardInterrupt:

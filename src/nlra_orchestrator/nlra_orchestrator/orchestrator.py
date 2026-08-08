@@ -73,6 +73,12 @@ APPROACH_CLEARANCE = 0.18      # m above grasp height for approach pose
 # closing sweep (13.5 mm) + support clearance (10 mm). Gripper/table geometry
 # only, independent of object size.
 GRASP_RAISE = 0.0805
+# Distance from tool0 to the fingertip-midpoint along the tool +z axis,
+# measured via TF (left +0.068, right -0.068 -> midpoint +0.098). The world
+# model's grasp pose is the FINGERTIP-MIDPOINT height; the motion planner
+# plans pose_link="tool0", so every pick/place z target must be raised by
+# this offset (tool0 +z points DOWN in the grasp orientation).
+TOOL0_FINGERTIP_OFFSET = 0.098
 # An object held between the fingertips hangs ~17 mm below the grasp point
 # (grasp point = midpoint of the fingertip link origins; empirical, measured
 # on the cube). Used to aim the drop height in the place skill.
@@ -289,26 +295,9 @@ class Orchestrator(Node):
             self._ground_err = err
             return None
 
-        x, y, z_grasp = gpose.pose.position.x, gpose.pose.position.y, gpose.pose.position.z
-
-        # Use MoveRelative for approach, descend, lift (in tool0 frame)
-        # Approach: move up by APPROACH_CLEARANCE from grasp pose
-        approach_trans = Vector3()
-        approach_trans.x = 0.0
-        approach_trans.y = 0.0
-        approach_trans.z = APPROACH_CLEARANCE
-
-        # Descend: move down by APPROACH_CLEARANCE to grasp pose
-        descend_trans = Vector3()
-        descend_trans.x = 0.0
-        descend_trans.y = 0.0
-        descend_trans.z = -APPROACH_CLEARANCE
-
-        # Lift: move up by APPROACH_CLEARANCE from grasp pose
-        lift_trans = Vector3()
-        lift_trans.x = 0.0
-        lift_trans.y = 0.0
-        lift_trans.z = APPROACH_CLEARANCE
+        # Remember the grasp orientation (tool pointing DOWN) so the place
+        # steps can reuse it — identity orientation would point the tool UP.
+        self._last_grasp_orientation = gpose.pose.orientation
 
         # Object width along the closing axis -> gentle press target angle.
         pose, perr = self._object_pose(obj_id)
@@ -318,13 +307,35 @@ class Orchestrator(Node):
             f"grasp target angle for '{obj_id}' (w={width*100:.1f} cm): "
             f"{grasp_pos:.3f} rad")
 
+        # Absolute approach/grasp/lift poses in base_link (world == base_link
+        # in this sim; plan_to_pose transforms "world"->base_link if needed).
+        from geometry_msgs.msg import PoseStamped
+        # The world model's grasp pose is the FINGERTIP-MIDPOINT height; the
+        # planner moves pose_link="tool0", which sits TOOL0_FINGERTIP_OFFSET
+        # above the fingertips (tool0 +z points DOWN in the grasp orientation),
+        # so every absolute z target must be raised by that offset.
+        gz = gpose.pose.position.z + TOOL0_FINGERTIP_OFFSET
+
+        def _pose_at(z):
+            ps = PoseStamped()
+            ps.header.frame_id = "base_link"
+            ps.pose.position.x = gpose.pose.position.x
+            ps.pose.position.y = gpose.pose.position.y
+            ps.pose.position.z = z
+            ps.pose.orientation = gpose.pose.orientation
+            return ps
+
+        approach_pose = _pose_at(gz + APPROACH_CLEARANCE)
+        grasp_pose = _pose_at(gz)
+        lift_pose = _pose_at(gz + APPROACH_CLEARANCE)
+
         return [
             ("open_gripper", lambda: self._call(self._release, Release.Goal())),
-            self._move_to_step(f"approach:{obj_id}", gpose),
-            self._move_relative_step(f"descend:{obj_id}", descend_trans, "tool0", 2.5),
+            self._move_to_step(f"approach:{obj_id}", approach_pose),
+            self._move_to_step(f"descend:{obj_id}", grasp_pose, 2.5),
             (f"grasp:{obj_id}", lambda: self._grasp_step(
                 grasp_pos, GRIPPER_GRASP_EFFORT)),
-            self._move_relative_step(f"lift:{obj_id}", lift_trans, "tool0", 6.0),
+            self._move_to_step(f"lift:{obj_id}", lift_pose, 6.0),
         ]
 
     def _place_steps(self, tgt_id):
@@ -347,31 +358,41 @@ class Orchestrator(Node):
         # drop_z - GRASP_HANG - size[2]/2. Aim the bottom at the support, but
         # never lower the fingers below GRASP_RAISE so the closed fingertips
         # keep their clearance (same geometry constants as the world model —
-        # keep in sync).
-        drop_z = support + max(GRASP_RAISE, GRASP_HANG + size[2] / 2.0)
+        # keep in sync). As in the pick, the planner moves tool0, so the
+        # fingertip-midpoint drop height must be raised by the tool0 offset.
+        drop_z = support + max(GRASP_RAISE, GRASP_HANG + size[2] / 2.0) \
+            + TOOL0_FINGERTIP_OFFSET
 
         # Create absolute poses for transfer, lower, retreat
         from geometry_msgs.msg import PoseStamped, Pose
+        # Keep the tool pointing DOWN (the orientation the object was picked
+        # with). Identity (w=1.0) would point the tool UP. Fall back to
+        # identity only if no pick happened in this process yet.
+        orient = getattr(self, "_last_grasp_orientation", None)
+        if orient is None:
+            from geometry_msgs.msg import Quaternion
+            orient = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+
         above_pose = PoseStamped()
         above_pose.header.frame_id = "base_link"
         above_pose.pose.position.x = x
         above_pose.pose.position.y = y
         above_pose.pose.position.z = drop_z + 0.10
-        above_pose.pose.orientation.w = 1.0  # tool pointing down
+        above_pose.pose.orientation = orient
 
         drop_pose = PoseStamped()
         drop_pose.header.frame_id = "base_link"
         drop_pose.pose.position.x = x
         drop_pose.pose.position.y = y
         drop_pose.pose.position.z = drop_z
-        drop_pose.pose.orientation.w = 1.0
+        drop_pose.pose.orientation = orient
 
         retreat_pose = PoseStamped()
         retreat_pose.header.frame_id = "base_link"
         retreat_pose.pose.position.x = x
         retreat_pose.pose.position.y = y
         retreat_pose.pose.position.z = drop_z + 0.10
-        retreat_pose.pose.orientation.w = 1.0
+        retreat_pose.pose.orientation = orient
 
         return [
             self._move_to_step(f"transfer:{tgt_id}", above_pose),

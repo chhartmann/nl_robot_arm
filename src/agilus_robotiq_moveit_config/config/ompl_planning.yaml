@@ -5,6 +5,12 @@ ompl:
     - default_planning_request_adapters/CheckStartStateBounds
     - default_planning_request_adapters/CheckStartStateCollision
     - default_planning_request_adapters/ResolveConstraintFrames
+  # Without a time-parameterizing response adapter the planned path carries
+  # zero time_from_start, which arm_controller rejects ("Time between points
+  # 0 and 1 is not strictly increasing").
+  response_adapters:
+    - default_planning_response_adapters/AddTimeOptimalParameterization
+    - default_planning_response_adapters/ValidateSolution
   start_state_max_bounds_error: 0.1
   manipulator:
     planner_configs:

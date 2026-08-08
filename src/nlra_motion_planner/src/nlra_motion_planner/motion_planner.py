@@ -1,6 +1,17 @@
 """MoveIt 2 motion planner wrapper for NL Robot Arm.
 
 Provides high-level planning and execution interface using moveit_py.
+
+API NOTE (verified against moveit2 jazzy moveit_py pybindings):
+- PlanningComponent.set_goal_state(pose_stamped_msg=...) REQUIRES pose_link
+  ("Must specify both message and corresponding link" otherwise).
+- PlanningComponent.plan() does NOT take max_velocity_scaling_factor /
+  max_acceleration_scaling_factor / planning_time kwargs. Scaling and planner
+  id go on a PlanRequestParameters object (constructed per-plan), which is
+  passed as single_plan_parameters.
+- PlanningComponent has NO compute_cartesian_path binding in Jazzy. Relative
+  Cartesian moves are implemented as absolute pose goals computed from the
+  current EE pose via TF.
 """
 import threading
 import time
@@ -12,15 +23,13 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
 from geometry_msgs.msg import PoseStamped, Pose, Vector3, Quaternion
-from moveit_msgs.msg import Constraints, JointConstraint, OrientationConstraint, PositionConstraint
 from moveit_msgs.msg import RobotTrajectory
 from sensor_msgs.msg import JointState
-from shape_msgs.msg import SolidPrimitive
 from tf2_ros import Buffer, TransformListener
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from moveit import MoveItPy
-from moveit.planning import PlanningComponent
+from moveit.planning import PlanRequestParameters
+from moveit.utils import create_params_file_from_dict
 
 from nlra_motion_planner.moveit_py_config import build_moveit_config_dict
 
@@ -37,24 +46,42 @@ def _quaternion_multiply(q1: List[float], q2: List[float]) -> List[float]:
     ]
 
 
+def _rotate_vector(v: Vector3, q: Quaternion) -> List[float]:
+    """Rotate vector v by quaternion q (Hamilton product: q * v * q^-1)."""
+    qv = [q.x, q.y, q.z, q.w]
+    vin = [v.x, v.y, v.z, 0.0]
+    # q * v
+    t = _quaternion_multiply(qv, vin)
+    # q * v * q^-1  (q^-1 = [-x, -y, -z, w])
+    t = _quaternion_multiply(t, [-qv[0], -qv[1], -qv[2], qv[3]])
+    return t[:3]
+
+
 class MotionPlanner(Node):
     """High-level motion planner using MoveIt 2 Python API."""
 
     def __init__(self):
         super().__init__("nlra_motion_planner")
 
-        # MoveItPy instance (its own node gets the pipeline parameters via config_dict)
+        # MoveItPy instance. use_sim_time cannot be passed via config_dict
+        # (moveit2#2220/#2940: node-scoped params file makes rclcpp abort on
+        # 'qos_overrides./clock.subscription.durability could not be set').
+        # Workaround: write the dict as a params file under the GLOBAL /**
+        # namespace and hand it over as launch_params_filepaths.
         self._moveit = MoveItPy(
             node_name="nlra_motion_planner_moveit",
-            config_dict=build_moveit_config_dict(),
+            launch_params_filepaths=[
+                create_params_file_from_dict(build_moveit_config_dict(), "/**")
+            ],
         )
         self._moveit_arm = self._moveit.get_planning_component("manipulator")
+        self._moveit_arm.set_start_state_to_current_state()
 
         # TF buffer for frame transformations
         self._tf_buffer = Buffer()
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
-        # Current joint state
+        # Current joint state (for FK of the current EE pose fallback)
         self._joint_state = None
         self._js_lock = threading.Lock()
         self.create_subscription(
@@ -93,6 +120,30 @@ class MotionPlanner(Node):
                 return [0.0, -1.5708, 1.5, 0.0, 0.0, 0.0]
 
     # ============================================================
+    # Planning parameter helpers
+    # ============================================================
+
+    def _make_plan_params(self, velocity_scaling: float,
+                          acceleration_scaling: float,
+                          planning_time: float,
+                          planner_id: str = "RRTConnectkConfigDefault"):
+        """Build a PlanRequestParameters for one plan() call."""
+        params = PlanRequestParameters(self._moveit, "plan_request_params")
+        params.planner_id = planner_id
+        params.planning_pipeline = "ompl"
+        params.planning_attempts = 3
+        params.planning_time = planning_time
+        params.max_velocity_scaling_factor = velocity_scaling
+        params.max_acceleration_scaling_factor = acceleration_scaling
+        return params
+
+    def _plan(self, velocity_scaling, acceleration_scaling, planning_time):
+        """plan() with a per-call PlanRequestParameters (Jazzy API)."""
+        params = self._make_plan_params(velocity_scaling, acceleration_scaling,
+                                        planning_time)
+        return self._moveit_arm.plan(single_plan_parameters=params)
+
+    # ============================================================
     # Public planning interface
     # ============================================================
 
@@ -105,29 +156,34 @@ class MotionPlanner(Node):
     ) -> Optional[RobotTrajectory]:
         """Plan a collision-free path to a target pose (absolute Cartesian).
 
-        Args:
-            target_pose: Target pose in base_link frame
-            velocity_scaling: Velocity scaling factor (0..1)
-            acceleration_scaling: Acceleration scaling factor (0..1)
-            planning_time: Max planning time in seconds
+        The pose is transformed into the MoveIt planning frame (base_link)
+        first. Pose goals need the tip link (tool0) explicitly.
 
         Returns:
             RobotTrajectory or None if planning failed
         """
         self.get_logger().info(f"Planning to pose: {target_pose.pose.position}")
 
-        # Set goal
-        self._moveit_arm.set_goal_state(pose_stamped_msg=target_pose)
+        # Transform the goal into the MoveIt planning frame (base_link) when it
+        # arrives in another frame (world-model grasp poses are in "world").
+        # The fixed virtual joint world->base_link is identity in this sim, so a
+        # failed transform is not fatal — the coordinates coincide anyway.
+        if target_pose.header.frame_id not in ("", "base_link"):
+            try:
+                target_pose = self._tf_buffer.transform(
+                    target_pose, "base_link",
+                    timeout=rclpy.duration.Duration(seconds=1.0))
+            except Exception as e:
+                self.get_logger().warn(
+                    f"pose frame transform {target_pose.header.frame_id}->"
+                    f"base_link failed ({e}); using pose as-is")
 
-        # Configure planning
-        plan_result = self._moveit_arm.plan(
-            single_plan_parameters=[
-                "RRTConnectkConfigDefault",
-            ],
-            max_velocity_scaling_factor=velocity_scaling,
-            max_acceleration_scaling_factor=acceleration_scaling,
-            planning_time=planning_time,
-        )
+        # Set goal with the required pose_link argument.
+        self._moveit_arm.set_goal_state(pose_stamped_msg=target_pose,
+                                        pose_link="tool0")
+
+        plan_result = self._plan(velocity_scaling, acceleration_scaling,
+                                 planning_time)
 
         if plan_result and plan_result.trajectory:
             self.get_logger().info("Planning succeeded")
@@ -135,49 +191,6 @@ class MotionPlanner(Node):
         else:
             self.get_logger().error("Planning failed")
             return None
-
-    def plan_cartesian_path(
-        self,
-        waypoints: List[Pose],
-        eef_step: float = 0.01,
-        jump_threshold: float = 0.0,
-        velocity_scaling: float = 0.2,
-        acceleration_scaling: float = 0.2,
-    ) -> Tuple[Optional[RobotTrajectory], float]:
-        """Plan a Cartesian path through waypoints.
-
-        Args:
-            waypoints: List of waypoints in base_link frame
-            eef_step: Max step for end-effector translation
-            jump_threshold: Jump threshold for IK solutions
-            velocity_scaling: Velocity scaling factor
-            acceleration_scaling: Acceleration scaling factor
-
-        Returns:
-            (RobotTrajectory, fraction) - fraction is how much of path was planned
-        """
-        self.get_logger().info(f"Planning Cartesian path with {len(waypoints)} waypoints")
-
-        start_state = self._moveit_arm.get_start_state()
-        current_positions = self._get_current_joint_positions()
-        start_state.joint_positions = dict(
-            zip(["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"], current_positions)
-        )
-
-        # Compute Cartesian path
-        fraction, trajectory = self._moveit_arm.compute_cartesian_path(
-            waypoints=waypoints,
-            eef_step=eef_step,
-            jump_threshold=jump_threshold,
-            start_state=start_state,
-        )
-
-        if trajectory and fraction > 0.9:
-            self.get_logger().info(f"Cartesian planning succeeded (fraction={fraction:.2f})")
-            return trajectory, fraction
-        else:
-            self.get_logger().warn(f"Cartesian planning partial: fraction={fraction:.2f}")
-            return trajectory, fraction
 
     def plan_to_joint_target(
         self,
@@ -199,18 +212,16 @@ class MotionPlanner(Node):
         """
         self.get_logger().info(f"Planning to joint target: {joint_positions}")
 
-        goal_state = self._moveit_arm.get_start_state()
+        from moveit.core import RobotState
+        goal_state = RobotState(self._moveit.get_robot_model())
         goal_state.joint_positions = dict(
-            zip(["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"], joint_positions)
+            zip(["joint_1", "joint_2", "joint_3", "joint_4", "joint_5",
+                 "joint_6"], joint_positions)
         )
-        self._moveit_arm.set_goal_state(joint_state=goal_state)
+        self._moveit_arm.set_goal_state(robot_state=goal_state)
 
-        plan_result = self._moveit_arm.plan(
-            single_plan_parameters=["RRTConnectkConfigDefault"],
-            max_velocity_scaling_factor=velocity_scaling,
-            max_acceleration_scaling_factor=acceleration_scaling,
-            planning_time=planning_time,
-        )
+        plan_result = self._plan(velocity_scaling, acceleration_scaling,
+                                 planning_time)
 
         if plan_result and plan_result.trajectory:
             self.get_logger().info("Joint planning succeeded")
@@ -229,6 +240,10 @@ class MotionPlanner(Node):
     ) -> Tuple[Optional[RobotTrajectory], float]:
         """Plan a relative Cartesian move from current pose.
 
+        Jazzy moveit_py has no compute_cartesian_path binding, so the relative
+        delta is applied to the current EE pose (TF) and planned as an absolute
+        pose goal (fraction is 1.0 on success).
+
         Args:
             translation: Translation delta (x, y, z)
             rotation_delta: Optional orientation delta (quaternion)
@@ -239,47 +254,52 @@ class MotionPlanner(Node):
         Returns:
             (RobotTrajectory, fraction)
         """
-        # Get current end-effector pose
-        current_pose = self._get_current_ee_pose(reference_frame)
+        # Get current end-effector pose in base_link
+        current_pose = self._get_current_ee_pose("tool0")
         if current_pose is None:
             self.get_logger().error("Failed to get current EE pose")
             return None, 0.0
 
         # Build target pose
         target_pose = Pose()
-        target_pose.position.x = current_pose.position.x + translation.x
-        target_pose.position.y = current_pose.position.y + translation.y
-        target_pose.position.z = current_pose.position.z + translation.z
+        target_pose.position.x = current_pose.position.x
+        target_pose.position.y = current_pose.position.y
+        target_pose.position.z = current_pose.position.z
+        target_pose.orientation = current_pose.orientation
+
+        if reference_frame == "tool0":
+            # Rotate the delta by the tool orientation before adding.
+            d = _rotate_vector(translation, current_pose.orientation)
+            target_pose.position.x += d[0]
+            target_pose.position.y += d[1]
+            target_pose.position.z += d[2]
+        else:
+            target_pose.position.x += translation.x
+            target_pose.position.y += translation.y
+            target_pose.position.z += translation.z
 
         if rotation_delta is not None:
-            # Apply rotation delta (quaternion multiplication)
-            q_current = [
-                current_pose.orientation.x,
-                current_pose.orientation.y,
-                current_pose.orientation.z,
-                current_pose.orientation.w,
-            ]
-            q_delta = [
-                rotation_delta.x,
-                rotation_delta.y,
-                rotation_delta.z,
-                rotation_delta.w,
-            ]
+            q_current = [current_pose.orientation.x, current_pose.orientation.y,
+                         current_pose.orientation.z, current_pose.orientation.w]
+            q_delta = [rotation_delta.x, rotation_delta.y, rotation_delta.z,
+                       rotation_delta.w]
             q_target = _quaternion_multiply(q_current, q_delta)
             target_pose.orientation.x = q_target[0]
             target_pose.orientation.y = q_target[1]
             target_pose.orientation.z = q_target[2]
             target_pose.orientation.w = q_target[3]
-        else:
-            target_pose.orientation = current_pose.orientation
 
-        # Plan Cartesian path to target
-        waypoints = [target_pose]
-        return self.plan_cartesian_path(
-            waypoints=waypoints,
-            velocity_scaling=velocity_scaling,
-            acceleration_scaling=acceleration_scaling,
-        )
+        target_stamped = PoseStamped()
+        target_stamped.header.frame_id = "base_link"
+        target_stamped.header.stamp = self.get_clock().now().to_msg()
+        target_stamped.pose = target_pose
+
+        traj = self.plan_to_pose(target_stamped,
+                                 velocity_scaling=velocity_scaling,
+                                 acceleration_scaling=acceleration_scaling)
+        if traj is None:
+            return None, 0.0
+        return traj, 1.0
 
     def _get_current_ee_pose(self, frame: str = "tool0") -> Optional[Pose]:
         """Get current end-effector pose in base_link frame."""
@@ -287,7 +307,8 @@ class MotionPlanner(Node):
             if frame == "tool0":
                 # Get transform from base_link to tool0
                 transform = self._tf_buffer.lookup_transform(
-                    "base_link", "tool0", rclpy.time.Time(), timeout=rclpy.duration.Duration(seconds=1.0)
+                    "base_link", "tool0", rclpy.time.Time(),
+                    timeout=rclpy.duration.Duration(seconds=1.0)
                 )
                 pose = Pose()
                 pose.position.x = transform.transform.translation.x
@@ -296,11 +317,8 @@ class MotionPlanner(Node):
                 pose.orientation = transform.transform.rotation
                 return pose
             else:
-                # For other frames, use FK
-                joint_positions = self._get_current_joint_positions()
-                # MoveIt can compute FK - use planning scene
-                from moveit_msgs.srv import GetPositionFK
-                # Simplified: return identity for now
+                self.get_logger().error(
+                    f"Unsupported reference frame '{frame}' (only tool0)")
                 return None
         except Exception as e:
             self.get_logger().warn(f"Failed to get EE pose: {e}")
@@ -313,45 +331,46 @@ class MotionPlanner(Node):
     def execute_trajectory(
         self,
         trajectory: RobotTrajectory,
-        timeout: float = 30.0,
+        timeout: float = 120.0,
     ) -> bool:
         """Execute a trajectory via the arm controller.
 
         Args:
             trajectory: RobotTrajectory to execute
-            timeout: Max execution time
+            timeout: Max execution time (s); generous because OMPL paths at
+                0.2 velocity scaling can take a while.
 
         Returns:
             True if execution succeeded
         """
-        # Convert to FollowJointTrajectory goal
         from control_msgs.action import FollowJointTrajectory
-        from builtin_interfaces.msg import Duration
 
         goal = FollowJointTrajectory.Goal()
-        goal.trajectory = trajectory.joint_trajectory
+        # pybind moveit.core.robot_trajectory.RobotTrajectory -> msg
+        goal.trajectory = trajectory.get_robot_trajectory_msg().joint_trajectory
 
         if not self._arm_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Arm controller not available")
             return False
 
         send_future = self._arm_client.send_goal_async(goal)
-        rclpy.spin_until_future_complete(self, send_future, timeout_sec=10.0)
-
-        if not send_future.done():
-            self.get_logger().error("Goal send timed out")
-            return False
+        t0 = time.monotonic()
+        while not send_future.done():
+            if time.monotonic() - t0 > 10.0:
+                self.get_logger().error("Goal send timed out")
+                return False
+            time.sleep(0.05)
 
         goal_handle = send_future.result()
-        if not goal_handle.accepted:
+        if goal_handle is None or not goal_handle.accepted:
             self.get_logger().error("Goal rejected by controller")
             return False
 
-        # Wait for result
+        # Wait for result (poll; the node's executor does the spinning)
         result_future = goal_handle.get_result_async()
-        start_time = time.time()
+        start_time = time.monotonic()
         while not result_future.done():
-            if time.time() - start_time > timeout:
+            if time.monotonic() - start_time > timeout:
                 goal_handle.cancel_goal_async()
                 self.get_logger().error("Execution timeout")
                 return False
