@@ -1,0 +1,82 @@
+ompl:
+  planning_plugin: ompl_interface/OMPLPlanner
+  request_adapters:
+    - default_planning_request_adapters/ValidateWorkspaceBounds
+    - default_planning_request_adapters/CheckStartStateBounds
+    - default_planning_request_adapters/CheckStartStateCollision
+    - default_planning_request_adapters/ResolveConstraintFrames
+  start_state_max_bounds_error: 0.1
+  manipulator:
+    planner_configs:
+      RRTConnectkConfigDefault:
+        type: geometric::RRTConnect
+        range: 0.0
+      RRTstarkConfigDefault:
+        type: geometric::RRTstar
+        range: 0.0
+        goal_bias: 0.05
+      PRMkConfigDefault:
+        type: geometric::PRM
+        range: 0.0
+      LazyPRMkConfigDefault:
+        type: geometric::LazyPRM
+        range: 0.0
+      LBKPIECEkConfigDefault:
+        type: geometric::LBKPIECE
+        range: 0.0
+        border_fraction: 0.9
+        min_valid_path_fraction: 0.5
+      BKPIECEkConfigDefault:
+        type: geometric::BKPIECE
+        range: 0.0
+        border_fraction: 0.9
+        min_valid_path_fraction: 0.5
+      KPIECEkConfigDefault:
+        type: geometric::KPIECE
+        range: 0.0
+        border_fraction: 0.9
+        min_valid_path_fraction: 0.5
+      ESTkConfigDefault:
+        type: geometric::EST
+        range: 0.0
+        goal_bias: 0.05
+      ProjESTkConfigDefault:
+        type: geometric::ProjEST
+        range: 0.0
+        goal_bias: 0.05
+      STRIDEkConfigDefault:
+        type: geometric::STRIDE
+        range: 0.0
+        goal_bias: 0.05
+      BiSTRIDEkConfigDefault:
+        type: geometric::BiSTRIDE
+        range: 0.0
+        goal_bias: 0.05
+      BiESTkConfigDefault:
+        type: geometric::BiEST
+        range: 0.0
+        goal_bias: 0.05
+
+    benchmark_configs:
+      default:
+        type: moveit_benchmarks/BenchmarkDefault
+        planners: ["RRTConnectkConfigDefault", "RRTstarkConfigDefault", "PRMkConfigDefault"]
+
+    planner_ids:
+      - RRTConnectkConfigDefault
+      - RRTstarkConfigDefault
+      - PRMkConfigDefault
+      - LazyPRMkConfigDefault
+      - LBKPIECEkConfigDefault
+      - BKPIECEkConfigDefault
+      - KPIECEkConfigDefault
+      - ESTkConfigDefault
+      - ProjESTkConfigDefault
+      - STRIDEkConfigDefault
+      - BiSTRIDEkConfigDefault
+      - BiESTkConfigDefault
+
+    # Global OMPL settings
+    default_planner_config: RRTConnectkConfigDefault
+    planner_selector:
+      type: ompl_interface::PlannerSelector

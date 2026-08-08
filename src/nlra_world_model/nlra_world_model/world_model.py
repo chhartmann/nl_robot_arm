@@ -24,6 +24,7 @@ import threading
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
 from scipy.spatial.transform import Rotation
 
 from geometry_msgs.msg import PoseStamped
@@ -181,8 +182,10 @@ class WorldModel(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = WorldModel()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:

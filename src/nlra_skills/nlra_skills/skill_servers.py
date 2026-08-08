@@ -6,9 +6,7 @@ One node hosting all skill action servers. Each skill:
   3. streams phase/progress feedback and returns a typed result.
 
 Skills are deliberately thin, deterministic wrappers — intelligence lives in
-the orchestrator, physics lives in Gazebo/ros2_control. MoveTo (Cartesian)
-will delegate to MoveIt in a later phase and currently returns
-planning_failed with a clear message.
+the orchestrator, physics lives in Gazebo/ros2_control.
 """
 import threading
 import time
@@ -21,10 +19,12 @@ from rclpy.node import Node
 
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory, GripperCommand
+from geometry_msgs.msg import PoseStamped, Pose, Vector3, Quaternion
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from nlra_interfaces.action import Grasp, Home, MoveJoints, MoveTo, Release
+from nlra_interfaces.action import Grasp, Home, MoveJoints, MoveTo, MoveRelative, MoveAxis, Release
+from nlra_motion_planner.motion_planner import MotionPlanner
 
 ARM_JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 # KUKA Agilus KR 16 R1100-3 limits (rad) from kuka_agilus_support URDF
@@ -67,12 +67,23 @@ class SkillServers(Node):
             self, GripperCommand,
             "/gripper_controller/gripper_cmd", callback_group=self._cb)
 
+        # Motion planner for Cartesian/joint planning
+        self._motion_planner = MotionPlanner()
+
         ActionServer(self, MoveJoints, "skills/move_joints",
                      execute_callback=self._exec_move_joints,
                      goal_callback=self._accept, cancel_callback=self._cancel,
                      callback_group=self._cb)
         ActionServer(self, MoveTo, "skills/move_to",
                      execute_callback=self._exec_move_to,
+                     goal_callback=self._accept, cancel_callback=self._cancel,
+                     callback_group=self._cb)
+        ActionServer(self, MoveRelative, "skills/move_relative",
+                     execute_callback=self._exec_move_relative,
+                     goal_callback=self._accept, cancel_callback=self._cancel,
+                     callback_group=self._cb)
+        ActionServer(self, MoveAxis, "skills/move_axis",
+                     execute_callback=self._exec_move_axis,
                      goal_callback=self._accept, cancel_callback=self._cancel,
                      callback_group=self._cb)
         ActionServer(self, Grasp, "skills/grasp",
@@ -88,7 +99,7 @@ class SkillServers(Node):
                      goal_callback=self._accept, cancel_callback=self._cancel,
                      callback_group=self._cb)
 
-        self.get_logger().info("skill servers up: move_joints, move_to, grasp, release, home")
+        self.get_logger().info("skill servers up: move_joints, move_to, move_relative, move_axis, grasp, release, home")
 
     # ------------------------------------------------------------- helpers
     def _on_js(self, msg: JointState):
@@ -264,13 +275,185 @@ class SkillServers(Node):
         return result
 
     def _exec_move_to(self, goal_handle):
-        # Cartesian motion requires MoveIt (Phase: motion planning integration).
+        fb = MoveTo.Feedback()
         result = MoveTo.Result()
-        result.success = False
-        result.error_code = ERR_PLANNING
-        result.message = ("MoveTo (Cartesian) not yet wired to MoveIt; "
-                          "use skills/move_joints for now")
-        goal_handle.abort()
+        req = goal_handle.request
+
+        fb.phase = "validating"
+        goal_handle.publish_feedback(fb)
+        ok, msg = self._preconditions(need_arm=True)
+        if not ok:
+            result.success, result.error_code, result.message = False, ERR_PRECONDITION, msg
+            goal_handle.abort()
+            return result
+
+        fb.phase = "planning"
+        goal_handle.publish_feedback(fb)
+
+        # Plan using motion planner
+        trajectory = self._motion_planner.plan_to_pose(
+            req.target,
+            velocity_scaling=req.velocity_scaling,
+            acceleration_scaling=req.acceleration_scaling,
+        )
+
+        if trajectory is None:
+            result.success = False
+            result.error_code = ERR_PLANNING
+            result.message = "MoveIt planning failed"
+            goal_handle.abort()
+            return result
+
+        fb.phase = "executing"
+        goal_handle.publish_feedback(fb)
+
+        # Execute trajectory
+        success = self._motion_planner.execute_trajectory(trajectory)
+
+        result.success = success
+        result.error_code = OK if success else ERR_EXECUTION
+        result.message = "MoveTo completed" if success else "MoveTo execution failed"
+        if success:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
+        return result
+
+    def _exec_move_relative(self, goal_handle):
+        fb = MoveRelative.Feedback()
+        result = MoveRelative.Result()
+        req = goal_handle.request
+
+        fb.phase = "validating"
+        goal_handle.publish_feedback(fb)
+        ok, msg = self._preconditions(need_arm=True)
+        if not ok:
+            result.success, result.error_code, result.message = False, ERR_PRECONDITION, msg
+            goal_handle.abort()
+            return result
+
+        fb.phase = "planning"
+        goal_handle.publish_feedback(fb)
+
+        # Plan relative Cartesian move
+        rotation_delta = None
+        if req.rotation_delta.x != 0.0 or req.rotation_delta.y != 0.0 or \
+           req.rotation_delta.z != 0.0 or req.rotation_delta.w != 0.0:
+            rotation_delta = req.rotation_delta
+
+        trajectory, fraction = self._motion_planner.plan_relative_cartesian(
+            req.translation,
+            rotation_delta=rotation_delta,
+            reference_frame=req.reference_frame,
+            velocity_scaling=req.velocity_scaling,
+            acceleration_scaling=req.acceleration_scaling,
+        )
+
+        if trajectory is None or fraction < 0.9:
+            result.success = False
+            result.error_code = ERR_PLANNING
+            result.message = f"Cartesian planning failed (fraction={fraction:.2f})"
+            goal_handle.abort()
+            return result
+
+        fb.phase = "executing"
+        goal_handle.publish_feedback(fb)
+
+        # Execute trajectory
+        success = self._motion_planner.execute_trajectory(trajectory)
+
+        result.success = success
+        result.error_code = OK if success else ERR_EXECUTION
+        result.message = "MoveRelative completed" if success else "MoveRelative execution failed"
+        if success:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
+        return result
+
+    def _exec_move_axis(self, goal_handle):
+        fb = MoveAxis.Feedback()
+        result = MoveAxis.Result()
+        req = goal_handle.request
+
+        fb.phase = "validating"
+        goal_handle.publish_feedback(fb)
+        ok, msg = self._preconditions(need_arm=True)
+        if not ok:
+            result.success, result.error_code, result.message = False, ERR_PRECONDITION, msg
+            goal_handle.abort()
+            return result
+
+        # Validate joint names
+        if len(req.joint_names) != len(req.positions):
+            result.success = False
+            result.error_code = ERR_PRECONDITION
+            result.message = "joint_names and positions length mismatch"
+            goal_handle.abort()
+            return result
+
+        for name in req.joint_names:
+            if name not in ARM_JOINTS:
+                result.success = False
+                result.error_code = ERR_PRECONDITION
+                result.message = f"Unknown joint: {name}"
+                goal_handle.abort()
+                return result
+
+        fb.phase = "planning"
+        goal_handle.publish_feedback(fb)
+
+        # Get current positions for relative moves
+        if req.relative:
+            current_positions = {}
+            with self._js_lock:
+                for name in ARM_JOINTS:
+                    if name in self._joint_pos:
+                        current_positions[name] = self._joint_pos[name]
+            target_positions = []
+            for name, delta in zip(req.joint_names, req.positions):
+                target_positions.append(current_positions.get(name, 0.0) + delta)
+        else:
+            target_positions = list(req.positions)
+
+        # Validate joint limits
+        for i, (name, pos) in enumerate(zip(req.joint_names, target_positions)):
+            joint_idx = ARM_JOINTS.index(name)
+            lo, hi = ARM_LIMITS[joint_idx]
+            if not (lo <= pos <= hi):
+                result.success = False
+                result.error_code = ERR_PRECONDITION
+                result.message = f"{name}={pos:.3f} outside limits [{lo:.3f}, {hi:.3f}]"
+                goal_handle.abort()
+                return result
+
+        # Plan to joint target
+        trajectory = self._motion_planner.plan_to_joint_target(
+            target_positions,
+            velocity_scaling=req.velocity_scaling,
+            acceleration_scaling=req.acceleration_scaling,
+        )
+
+        if trajectory is None:
+            result.success = False
+            result.error_code = ERR_PLANNING
+            result.message = "Joint-space planning failed"
+            goal_handle.abort()
+            return result
+
+        fb.phase = "executing"
+        goal_handle.publish_feedback(fb)
+
+        # Execute trajectory
+        success = self._motion_planner.execute_trajectory(trajectory)
+
+        result.success = success
+        result.error_code = OK if success else ERR_EXECUTION
+        result.message = "MoveAxis completed" if success else "MoveAxis execution failed"
+        if success:
+            goal_handle.succeed()
+        else:
+            goal_handle.abort()
         return result
 
     def _exec_grasp(self, goal_handle):

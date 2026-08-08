@@ -1,0 +1,13 @@
+# Move the arm to an explicit joint configuration (absolute or relative).
+string[] joint_names
+float64[] positions          # absolute positions (rad) or delta if relative=true
+bool relative false          # if true, positions are deltas from current
+float32 velocity_scaling 0.2
+float32 acceleration_scaling 0.2
+---
+bool success
+int32 error_code            # 0 ok, 1 precondition_failed, 2 planning_failed, 3 execution_failed, 4 cancelled
+string message
+---
+string phase                # validating | planning | executing
+float32 progress            # 0..1 best-effort

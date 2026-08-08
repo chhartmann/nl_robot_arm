@@ -1,0 +1,13 @@
+# Move the arm end-effector by a relative Cartesian delta in a reference frame.
+geometry_msgs/Vector3 translation
+geometry_msgs/Quaternion rotation_delta  # optional orientation delta (identity = no change)
+string reference_frame "tool0"          # frame for the delta: "tool0" (ee), "base_link", etc.
+float32 velocity_scaling 0.2            # 0..1, fraction of joint velocity limits
+float32 acceleration_scaling 0.2
+---
+bool success
+int32 error_code            # 0 ok, 1 precondition_failed, 2 planning_failed, 3 execution_failed, 4 cancelled
+string message
+---
+string phase                # validating | planning | executing
+float32 progress            # 0..1 best-effort

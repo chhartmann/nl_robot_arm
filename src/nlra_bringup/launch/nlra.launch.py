@@ -4,22 +4,22 @@
   ros2 launch nlra_bringup nlra.launch.py gui:=true  # with Gazebo GUI
   ros2 launch nlra_bringup nlra.launch.py nl:=false  # without the NL interface
 
-Order matters: sim first, then (delayed) bridges + world model + skills +
-orchestrator + NL interface. Delays are conservative for slow hosts;
-each node is independently restartable at runtime.
+Order matters: sim first, then (delayed) bridges + world model + move_group +
+motion_planner + skills + orchestrator + NL interface. Delays are conservative
+for slow hosts; each node is independently restartable at runtime.
 
 The NL interface opens its own chat GUI window when a DISPLAY is present;
 on headless hosts it falls back to the inline terminal REPL.
 """
 import os
+from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, TimerAction
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
 
 
 def nl_gui_action(condition):
@@ -33,11 +33,13 @@ def generate_launch_description():
     world = LaunchConfiguration("world")
     nl = LaunchConfiguration("nl")
 
+    # Use get_package_share_directory to avoid PathJoinSubstitution issues
+    agilus_desc_share = get_package_share_directory("agilus_robotiq_description")
+    agilus_moveit_share = get_package_share_directory("agilus_robotiq_moveit_config")
+
     sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            PathJoinSubstitution([
-                FindPackageShare("agilus_robotiq_description"),
-                "launch", "spawn_agilus_robotiq.launch.py"])),
+            os.path.join(agilus_desc_share, "launch", "spawn_agilus_robotiq.launch.py")),
         launch_arguments={"gui": gui, "world": world}.items())
 
     pose_bridge = Node(
@@ -50,8 +52,15 @@ def generate_launch_description():
         ],
         output="screen")
 
+    # MoveIt move_group (starts after sim is up)
+    move_group = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(agilus_moveit_share, "launch", "move_group.launch.py")))
+
     world_model = Node(package="nlra_world_model", executable="world_model",
                        output="screen")
+    motion_planner = Node(package="nlra_motion_planner", executable="motion_planner",
+                          output="screen")
     skills = Node(package="nlra_skills", executable="skill_servers",
                   output="screen")
     orchestrator = Node(package="nlra_orchestrator", executable="orchestrator",
@@ -72,6 +81,8 @@ def generate_launch_description():
             "pkill -TERM -f '[n]lra_world_model/world_model' || true",
             "pkill -TERM -f '[n]lra_nl_interface/nl_interface' || true",
             "pkill -TERM -f '[n]lra_nl_interface/nl_gui' || true",
+            "pkill -TERM -f '[n]lra_motion_planner/motion_planner' || true",
+            "pkill -TERM -f '[m]ove_group' || true",
             "pkill -TERM -f '[p]arameter_bridge.*object_pose_bridge' || true",
             "sleep 1",
         ])],
@@ -84,8 +95,10 @@ def generate_launch_description():
         reset_stack,
         sim,
         TimerAction(period=25.0, actions=[pose_bridge]),
-        TimerAction(period=30.0, actions=[world_model, skills]),
-        TimerAction(period=35.0, actions=[orchestrator]),
-        TimerAction(period=40.0, actions=[nl_interface]),
-        TimerAction(period=45.0, actions=[nl_gui]),
+        TimerAction(period=30.0, actions=[world_model, move_group]),
+        TimerAction(period=35.0, actions=[motion_planner]),
+        TimerAction(period=40.0, actions=[skills]),
+        TimerAction(period=45.0, actions=[orchestrator]),
+        TimerAction(period=50.0, actions=[nl_interface]),
+        TimerAction(period=55.0, actions=[nl_gui]),
     ])

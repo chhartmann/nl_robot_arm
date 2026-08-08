@@ -12,6 +12,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetGraspPose.srv"
   "srv/NLCommand.srv"
   "action/MoveTo.action"
+  "action/MoveRelative.action"
+  "action/MoveAxis.action"
   "action/ExecuteTask.action"
   "action/MoveJoints.action"
   "action/Grasp.action"
