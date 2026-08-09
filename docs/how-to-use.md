@@ -54,16 +54,19 @@ ros2 launch nlra_bringup nlra.launch.py nl:=false
 | t (s) | component                                   |
 |-------|---------------------------------------------|
 | 0     | Gazebo sim + robot spawn + controllers      |
-| 25    | ros_gz bridges (object poses, gripper attach/detach, /clock) |
-| 30    | world model + skill servers                 |
-| 35    | orchestrator                                |
-| 40    | NL interface                                |
+| 25    | ros_gz pose bridge (object poses)           |
+| 30    | world model + MoveIt `move_group`           |
+| 40    | skill servers (embed the MoveItPy motion planner) |
+| 45    | orchestrator                                |
+| 50    | NL interface                                |
+| 55    | NL chat GUI                                 |
 
 Each node is independently restartable at runtime.
 
 ## 5. Launching pieces separately
 
-If the sim is already running and you only need the skill servers:
+If the sim is already running and you only need the skill servers (which embed
+the MoveItPy motion planner — `move_group` must be up too):
 
 ```bash
 ros2 launch nlra_skills skills.launch.py
@@ -76,14 +79,19 @@ ros2 run nlra_world_model world_model
 ros2 run nlra_skills skill_servers
 ros2 run nlra_orchestrator orchestrator
 ros2 run nlra_nl_interface nl_interface
+ros2 run nlra_nl_interface nl_gui
 ```
+
+For the `move_to` / `move_relative` / `move_axis` skills to plan, a MoveIt
+`move_group` must be running (the full stack launches it automatically; on a
+manual setup start it via `ros2 launch agilus_robotiq_moveit_config move_group.launch.py`).
 
 ## 6. Inspecting the running system
 
 ```bash
-ros2 node list                                   # all live nodes
+ros2 node list                                   # all live nodes (incl. move_group)
 ros2 topic list                                  # all topics (bridged too)
-ros2 action list                                 # skill actions
+ros2 action list -t                              # skill + orchestrator actions
 ros2 control list_controllers                    # controller states
 ros2 topic echo /joint_states                    # arm/gripper joint states
 ```
@@ -99,8 +107,11 @@ pkill -f 'gz sim'          # only if a server was left behind
 
 ## 8. Notes
 
-- The world model relies on the ros_gz pose bridges from the launch file; if
-  you start nodes manually, bring those bridges up too.
+- The world model relies on the ros_gz pose bridge from the launch file; if
+  you start nodes manually, bring that bridge up too.
+- `move_to` / `move_relative` / `move_axis` need MoveIt (`move_group` + the
+  embedded motion planner) to be up; `move_joints` / `grasp` / `release` /
+  `home` talk straight to the controllers.
 - The NL interface calls an LLM — configure your provider/API key (see
   `nlra_nl_interface` / `.env` handling via `python-dotenv`) before using it.
 - Real-time hardware drivers (`kuka_drivers`) are intentionally not installed;

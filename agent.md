@@ -40,8 +40,9 @@ Read these files before changing behavior:
 - The robot description and meshes are vendored in
   `src/agilus_robotiq_description`; a separate KUKA description checkout is not
   required.
-- The orchestrator currently uses numeric IK with `yourdfpy` and `scipy`, not
-  MoveIt Cartesian planning.
+- The orchestrator grounds object symbols through the world model and sequences
+  MoveIt-backed skills; motion is planned by `nlra_motion_planner` (MoveItPy)
+  and executed via the arm controller.
 - Object poses come from Gazebo ground truth through `ros_gz_bridge`; camera
   perception is intentionally deferred.
 - Skills are ROS 2 action servers. The orchestrator plans and sequences skills;
@@ -58,10 +59,13 @@ docs/
   how-to-use.md                   Operational commands
 src/
   agilus_robotiq_description/     URDF, meshes, Gazebo worlds, controllers
+  agilus_robotiq_moveit_config/   MoveIt 2 config (move_group, SRDF, OMPL)
   nlra_interfaces/                ROS messages, services, and actions
+  nlra_motion_planner/            MoveItPy wrapper (plan_to_pose, relative/joint, execute)
+  nlra_gz_grasp_fix/              Gazebo grasp-fix plugin (detachable joint on contact)
   nlra_skills/                    Move/grasp/release/home action servers
   nlra_world_model/               Ground-truth object and grasp-pose services
-  nlra_orchestrator/              Task grounding, numeric IK, sequencing/retry
+  nlra_orchestrator/              Task grounding, MoveIt-backed sequencing/retry
   nlra_nl_interface/              LLM-backed /nl_command service and NL GUI
   nlra_bringup/                   Single launch file for the complete stack
 ```
@@ -134,10 +138,11 @@ You can also run directly via Pixi without an interactive shell:
 pixi run ros2 launch nlra_bringup nlra.launch.py
 ```
 
-The full launch starts components in stages: Gazebo and the robot first, pose
-bridges at about 25 seconds, world model and skills at about 30 seconds,
-orchestrator at about 35 seconds, and the NL interface at about 40 seconds.
-Allow the stack to finish starting before sending commands.
+The full launch starts components in stages: Gazebo and the robot first, the
+pose bridge at about 25 seconds, world model and MoveIt `move_group` at about
+30 seconds, skill servers at about 40 seconds, orchestrator at about 45
+seconds, and the NL interface (+ chat GUI) at about 50–55 seconds. Allow the
+stack to finish starting before sending commands.
 
 The robot-only launch is also available:
 
@@ -204,7 +209,8 @@ pkill -f 'gz sim'
 
 ROS contracts live in `src/nlra_interfaces`:
 
-- Actions: `MoveTo`, `MoveJoints`, `Grasp`, `Release`, `Home`, `ExecuteTask`.
+- Actions: `MoveTo`, `MoveRelative`, `MoveAxis`, `MoveJoints`, `Grasp`,
+  `Release`, `Home`, `ExecuteTask`.
 - Services: `GetObjects`, `GetObjectPose`, `GetGraspPose`, `NLCommand`.
 - Message: `WorldObject`.
 
@@ -213,9 +219,10 @@ Typical command flow:
 1. `/nl_command` queries the world model for live object IDs and poses.
 2. The OpenAI-compatible LLM maps the user text to one typed task/tool call.
 3. The NL interface dispatches `/orchestrator/execute_task`.
-4. The orchestrator grounds symbols, computes joint targets, and calls skill
-   action servers.
-5. Skills use the arm and gripper controllers and return typed success/failure.
+4. The orchestrator grounds symbols, builds approach/grasp/lift poses, and
+   calls the MoveIt-backed skill action servers.
+5. Skills plan through `nlra_motion_planner` (MoveItPy) and drive the arm and
+   gripper controllers, returning typed success/failure.
 6. The orchestrator verifies postconditions through the world model and reports
    failure rather than claiming success.
 
@@ -242,8 +249,10 @@ the URDF, `nlra_skills`, `nlra_world_model`, and `nlra_orchestrator`.
 
 ## Known Limitations
 
-- Numeric top-down IK is suitable for the current tabletop simulation but is not
-  a replacement for general collision-aware Cartesian planning.
+- MoveIt planning is pose-based; `moveit_py` on Jazzy has no
+  `compute_cartesian_path` binding, so "relative" Cartesian moves are planned
+  as absolute goals from the current EE pose (fine for the current tabletop
+  sim, not true path-constrained motion).
 - Vision-based perception is not enabled; Gazebo ground-truth pose bridges are
   used instead.
 - The NL layer depends on a cloud, OpenAI-compatible endpoint unless replaced.
