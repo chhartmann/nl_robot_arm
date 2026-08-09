@@ -65,11 +65,18 @@ def generate_launch_description():
 
     # Always reset: kill any leftover gz sim server from a previous run so the
     # simulation always starts fresh (world state, robot pose, attach state).
+    # Also kill leftover /clock bridges: every launch starts its own
+    # parameter_bridge for /clock, and a stale one from a previous run keeps
+    # publishing the clock. Two+ interleaved /clock streams are not strictly
+    # monotonic — subscribers see the merged timestamps jump backward, which
+    # makes every use_sim_time tf2 buffer clear and flood the log with
+    # "Detected jump back in time. Clearing TF buffer."
     # Runs as its own process (chained to gz start via OnProcessExit below):
     # a pkill in the same cmdline as gz would match its own wrapper. The
     # "gz [s]im" pattern avoids matching this reset wrapper's own cmdline.
     reset_sim = ExecuteProcess(
-        cmd=["bash", "-c", "pkill -f 'gz [s]im' || true"],
+        cmd=["bash", "-c", "pkill -f 'gz [s]im' || true; "
+                           "pkill -f '[p]arameter_bridge.*/clock' || true"],
         output="screen",
     )
 
@@ -125,9 +132,10 @@ def generate_launch_description():
         rsp,
         reset_sim,
         spawn,
-        clock_bridge,
+        # The /clock bridge starts only after reset_sim finishes, so the reset
+        # above never kills the bridge this launch just started.
         RegisterEventHandler(OnProcessExit(target_action=reset_sim,
-                                           on_exit=[gz_server])),
+                                           on_exit=[gz_server, clock_bridge])),
         # The GUI (macOS/Windows) attaches to the running server, so start it
         # only once the robot is spawned — that guarantees server + world are up.
         RegisterEventHandler(OnProcessExit(target_action=spawn,

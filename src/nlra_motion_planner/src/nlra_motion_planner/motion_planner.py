@@ -77,8 +77,13 @@ class MotionPlanner(Node):
         self._moveit_arm = self._moveit.get_planning_component("manipulator")
         self._moveit_arm.set_start_state_to_current_state()
 
-        # TF buffer for frame transformations
-        self._tf_buffer = Buffer()
+        # TF buffer for frame transformations. Bind it to this node so its
+        # clock follows /clock (use_sim_time) instead of a plain system-time
+        # Clock. The transforms on /tf are stamped with sim time; a buffer on
+        # wall-clock time sees those stamps as a "jump back in time" whenever
+        # wall time and sim time diverge, clearing the buffer and flooding the
+        # log with "Detected jump back in time. Clearing TF buffer."
+        self._tf_buffer = Buffer(node=self)
         self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # Current joint state (for FK of the current EE pose fallback)

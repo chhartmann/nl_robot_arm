@@ -71,6 +71,16 @@ class SkillServers(Node):
         # rclpy Node (TF listener, /joint_states sub, arm action client), so it
         # must be added to an executor — main() spins both nodes.
         self._motion_planner = MotionPlanner()
+        # use_sim_time is node-scoped: the launch passes it to this
+        # (nlra_skill_servers) node, but the embedded MotionPlanner node must
+        # follow /clock too, or its TF buffer / get_clock().now() would mix
+        # wall-clock time with the sim-time-stamped transforms on /tf.
+        sim_time = self.has_parameter("use_sim_time") and \
+            self.get_parameter("use_sim_time").value
+        self._motion_planner.set_parameters([
+            rclpy.Parameter("use_sim_time", rclpy.Parameter.Type.BOOL,
+                            bool(sim_time)),
+        ])
 
         ActionServer(self, MoveJoints, "skills/move_joints",
                      execute_callback=self._exec_move_joints,

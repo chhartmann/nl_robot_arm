@@ -25,7 +25,9 @@ from launch_ros.actions import Node
 def nl_gui_action(condition):
     """Open the NL chat GUI in its own window."""
     return Node(package="nlra_nl_interface", executable="nl_gui",
-                output="screen", condition=condition)
+                output="screen",
+                parameters=[{"use_sim_time": True}],
+                condition=condition)
 
 
 def generate_launch_description():
@@ -58,17 +60,21 @@ def generate_launch_description():
             os.path.join(agilus_moveit_share, "launch", "move_group.launch.py")))
 
     world_model = Node(package="nlra_world_model", executable="world_model",
-                       output="screen")
+                       output="screen",
+                       parameters=[{"use_sim_time": True}])
     # NOTE: no standalone motion_planner node here — the skill servers embed
     # their own MotionPlanner instance (same MoveItPy). A second standalone
     # node would only duplicate the "nlra_motion_planner_moveit" node name
     # and spin an unused MoveItPy.
     skills = Node(package="nlra_skills", executable="skill_servers",
-                  output="screen")
+                  output="screen",
+                  parameters=[{"use_sim_time": True}])
     orchestrator = Node(package="nlra_orchestrator", executable="orchestrator",
-                        output="screen")
+                        output="screen",
+                        parameters=[{"use_sim_time": True}])
     nl_interface = Node(package="nlra_nl_interface", executable="nl_interface",
                         output="screen",
+                        parameters=[{"use_sim_time": True}],
                         condition=IfCondition(nl))
     nl_gui = nl_gui_action(IfCondition(nl))
 
