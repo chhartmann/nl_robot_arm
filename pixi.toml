@@ -92,8 +92,14 @@ GZ_RENDERING_PLUGIN_PATH = "$CONDA_PREFIX/lib/gz-rendering-8/engine-plugins"
 # Resolve any remaining source deps via rosdep (skips what pixi already provides).
 deps = "rosdep install --from-paths src --ignore-src -r -y --skip-keys 'ros-jazzy-desktop'"
 
+# Rebuild fcl 0.7.0 against the env's Eigen 5 headers to fix the arm64 ABI
+# mismatch with moveit-core build _18 (conda fcl was built against Eigen 3).
+# Idempotent: skips while the marker file exists in the env, re-runs whenever
+# the env is recreated by pixi. See scripts/rebuild_fcl.sh for the full why.
+rebuild_fcl = "bash scripts/rebuild_fcl.sh"
+
 # Build the colcon workspace.
-build = "colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release"
+build = { cmd = "colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release", depends-on = ["rebuild_fcl"] }
 
 # Convenience: check ROS is live inside the env.
 ros_check = "ros2 pkg list | grep -E 'moveit|ros_gz|controller' | head"
