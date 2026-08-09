@@ -6,7 +6,7 @@ authors = ["christian"]
 channels = ["robostack-jazzy", "conda-forge"]
 # Verified: robostack-jazzy has identical coverage on both. Pick your host arch
 # (or keep both so the workspace is portable).
-platforms = ["linux-64", "linux-aarch64"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
 
 # ---------------------------------------------------------------------------
 # Conda / RoboStack dependencies (solved by pixi/conda)
@@ -96,6 +96,14 @@ build = "colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release"
 
 # Convenience: check ROS is live inside the env.
 ros_check = "ros2 pkg list | grep -E 'moveit|ros_gz|controller' | head"
+
+# Launch the full simulation with the Gazebo GUI.
+# ros2_exec.sh rebuilds DYLD_LIBRARY_PATH from AMENT_PREFIX_PATH after pixi's
+# task shell spawns (macOS purges DYLD_* through protected system shells).
+sim = { cmd = "scripts/ros2_exec.sh ros2 launch nlra_bringup nlra.launch.py gui:=true", depends-on = ["build"] }
+
+# Launch the full simulation headless (no GUI).
+sim_headless = { cmd = "scripts/ros2_exec.sh ros2 launch nlra_bringup nlra.launch.py gui:=false", depends-on = ["build"] }
 
 # Launch the Agilus in Gazebo (target once description is wired — Phase 1).
 # sim = { cmd = "ros2 launch agilus_robotiq_description spawn_agilus_robotiq.launch.py", depends-on = ["build"] }

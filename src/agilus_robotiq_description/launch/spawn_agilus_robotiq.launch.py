@@ -5,16 +5,22 @@ Spawn KUKA Agilus KR 16 R1100-3 + Robotiq 2F-85 in Gazebo Harmonic with ros2_con
 Headless-friendly: pass gui:=false (default true) to run the gz server only
 (useful on machines without a display / for CI smoke tests).
 
+macOS (and Windows) cannot run the gz server and GUI in one process, so they
+are launched separately: the server always runs with `-s`, and the GUI (when
+gui:=true) connects to it with `-g` after the robot is spawned (which is
+guaranteed to be after the server+world are up).
+
 Launches:
   * robot_state_publisher (robot_description from xacro)
-  * gz_sim (server; +gui when gui:=true)
+  * gz_sim server (`-s`)
+  * gz_sim GUI (`-g`, when gui:=true) — macOS/Windows compatible
   * ros_gz spawn of the robot
   * controller spawners: joint_state_broadcaster, arm_controller, gripper_controller
 """
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -67,14 +73,17 @@ def generate_launch_description():
         output="screen",
     )
 
+    # On macOS (and Windows) gz sim cannot run server + GUI in one process
+    # (gazebosim/gz-sim#44), so they are split here: the server always runs
+    # with -s, and the GUI (gui:=true) connects to the running server with -g.
+    gz_server = ExecuteProcess(
+        cmd=["gz", "sim", "-s", "-r", "-v", "3", world_file],
+        output="screen",
+    )
     gz_gui = ExecuteProcess(
-        cmd=["gz", "sim", "-r", "-v", "3", "--render-engine", render_engine,
+        cmd=["gz", "sim", "-g", "-v", "3", "--render-engine", render_engine,
              "--gui-config", gui_config, world_file],
         output="screen", condition=IfCondition(gui),
-    )
-    gz_headless = ExecuteProcess(
-        cmd=["gz", "sim", "-s", "-r", "-v", "3", world_file],
-        output="screen", condition=UnlessCondition(gui),
     )
 
     spawn = Node(
@@ -108,9 +117,9 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("gui", default_value="true",
                               description="Run Gazebo GUI (false = headless server only)"),
-        DeclareLaunchArgument("render_engine", default_value="ogre",
-                              description="gz sim render engine (ogre2 default upstream; "
-                                          "use ogre on drivers/UTM that only support Ogre1)"),
+        DeclareLaunchArgument("render_engine", default_value="ogre2",
+                              description="gz sim render engine (ogre2 works on macOS/Apple "
+                                          "GPU; use ogre on drivers/UTM that only support Ogre1)"),
         DeclareLaunchArgument("world", default_value="empty_bullet.sdf",
                               description="World file in this package's worlds/ dir"),
         rsp,
@@ -118,7 +127,10 @@ def generate_launch_description():
         spawn,
         clock_bridge,
         RegisterEventHandler(OnProcessExit(target_action=reset_sim,
-                                           on_exit=[gz_gui, gz_headless])),
-        RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[jsb])),
+                                           on_exit=[gz_server])),
+        # The GUI (macOS/Windows) attaches to the running server, so start it
+        # only once the robot is spawned — that guarantees server + world are up.
+        RegisterEventHandler(OnProcessExit(target_action=spawn,
+                                           on_exit=[jsb, gz_gui])),
         RegisterEventHandler(OnProcessExit(target_action=jsb, on_exit=[arm, grip])),
     ])
