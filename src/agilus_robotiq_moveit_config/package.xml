@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>agilus_robotiq_moveit_config</name>
+  <version>0.1.0</version>
+  <description>MoveIt 2 configuration for Agilus KR 16 R1100-3 + Robotiq 2F-85</description>
+  <maintainer email="christian@example.com">christian</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>agilus_robotiq_description</depend>
+  <depend>moveit_ros_move_group</depend>
+  <depend>moveit_planners_ompl</depend>
+  <depend>moveit_simple_controller_manager</depend>
+  <depend>joint_trajectory_controller</depend>
+  <depend>robot_state_publisher</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

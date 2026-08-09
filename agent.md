@@ -1,8 +1,25 @@
 # Agent Guide: `nl_robot_arm`
 
-This repository is a simulation-only ROS 2 workspace for commanding a KUKA
+This repository is a **pixi-managed**, simulation-only ROS 2 workspace for commanding a KUKA
 Agilus KR 16 R1100-3 arm with a Robotiq 2F-85 gripper using natural language.
-The stack runs in Gazebo Harmonic and is managed with Pixi/RoboStack.
+The stack runs in Gazebo Harmonic on ROS 2 Jazzy and uses **Pixi/RoboStack** for
+reproducible cross-platform (aarch64 + x86_64) dependency management.
+
+## Pixi Quick Start
+
+```bash
+# Install dependencies and build
+pixi install
+pixi run build
+
+# Enter activated shell (sources install/setup.sh, sets Gazebo paths)
+pixi shell
+
+# Run full stack
+ros2 launch nlra_bringup nlra.launch.py
+```
+
+All commands below assume you are inside `pixi shell` (or have run `pixi run`).
 
 ## Start Here
 
@@ -54,15 +71,23 @@ Generated or local-only directories include `build/`, `install/`, `log/`, and
 
 ## Environment Setup
 
-From the repository root:
+From the repository root, all development happens inside the Pixi environment:
 
 ```bash
+# One-time setup: install ROS/Python deps, build workspace
 pixi install
 pixi run build
+
+# Enter activated shell — this sources install/setup.sh and configures
+# Gazebo plugin/resource paths. Use this for all interactive work.
 pixi shell
+
+# Or run one-off commands without the shell:
+pixi run ros2 launch nlra_bringup nlra.launch.py
 ```
 
-`pixi install` resolves ROS and Python dependencies. `pixi run build` runs:
+`pixi install` resolves ROS and Python dependencies from `pixi.toml` (RoboStack channels).
+`pixi run build` executes:
 
 ```bash
 colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
@@ -83,10 +108,10 @@ the Pixi-provided desktop metapackage.
 
 ## Running the Stack
 
-The normal full-stack command is headless and uses the tabletop scene:
+All launch commands assume you are inside `pixi shell` (which sources the
+overlay). The normal full-stack command is headless and uses the tabletop scene:
 
 ```bash
-pixi shell
 ros2 launch nlra_bringup nlra.launch.py
 ```
 
@@ -101,6 +126,12 @@ ros2 launch nlra_bringup nlra.launch.py nl:=false
 
 # Select a packaged world
 ros2 launch nlra_bringup nlra.launch.py world:=empty_bullet.sdf
+```
+
+You can also run directly via Pixi without an interactive shell:
+
+```bash
+pixi run ros2 launch nlra_bringup nlra.launch.py
 ```
 
 The full launch starts components in stages: Gazebo and the robot first, pose

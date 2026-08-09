@@ -9,16 +9,10 @@ Plans are simple declarative step lists; each step calls a skill action
 and checks success. Failure aborts the plan with failed_step set.
 
 Grounding: object pose (world model, ground truth) -> arm joint targets
-via a small numeric IK for the arm's first three joints + wrist, with
-the tool pointing straight down. Good enough for tabletop pick/place in
-sim; MoveIt-backed Cartesian planning replaces this in a later phase.
+via MoveIt-backed Cartesian planning (move_to, move_relative skills).
 """
 import json
 import math
-import os
-import subprocess
-import tempfile
-import threading
 import time
 
 import rclpy
@@ -27,21 +21,18 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
-from nlra_interfaces.action import ExecuteTask, Grasp, Home, MoveJoints, Release
+from geometry_msgs.msg import Vector3, Quaternion
+from nlra_interfaces.action import ExecuteTask, Grasp, Home, MoveJoints, MoveTo, MoveRelative, MoveAxis, Release
 from nlra_interfaces.srv import GetGraspPose, GetObjectPose
 from sensor_msgs.msg import JointState
+
 OK = 0
 ERR_UNKNOWN_TASK = 1
 ERR_GROUNDING = 2
 ERR_SKILL = 3
 ERR_CANCELLED = 4
 
-# --- numeric IK on the real URDF (yourdfpy FK + scipy least squares) ---
-URDF_PATH = os.environ.get("NLRA_URDF_PATH",
-                           "/opt/data/nl_robot_arm/.snapshot_urdf.xml")
-ARM_JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
-TOOL_LINK = "tool0"
-# joint name aliases accepted in move_joints args (LLM-friendly)
+# Joint name aliases accepted in move_joints args (LLM-friendly)
 JOINT_INDEX = {
     "joint_1": 0, "a1": 0, "j1": 0,
     "joint_2": 1, "a2": 1, "j2": 1,
@@ -50,8 +41,6 @@ JOINT_INDEX = {
     "joint_5": 4, "a5": 4, "j5": 4,
     "joint_6": 5, "a6": 5, "j6": 5,
 }
-# grasp point offset below tool0 (gripper fingers) along tool z
-GRASP_OFFSET = 0.15
 
 # The gripper closes toward a small angle PAST first pad contact and stalls on
 # whatever object blocks it — the stall angle adapts to the object's size. The
@@ -84,220 +73,16 @@ APPROACH_CLEARANCE = 0.18      # m above grasp height for approach pose
 # closing sweep (13.5 mm) + support clearance (10 mm). Gripper/table geometry
 # only, independent of object size.
 GRASP_RAISE = 0.0805
+# Distance from tool0 to the fingertip-midpoint along the tool +z axis,
+# measured via TF (left +0.068, right -0.068 -> midpoint +0.098). The world
+# model's grasp pose is the FINGERTIP-MIDPOINT height; the motion planner
+# plans pose_link="tool0", so every pick/place z target must be raised by
+# this offset (tool0 +z points DOWN in the grasp orientation).
+TOOL0_FINGERTIP_OFFSET = 0.098
 # An object held between the fingertips hangs ~17 mm below the grasp point
 # (grasp point = midpoint of the fingertip link origins; empirical, measured
 # on the cube). Used to aim the drop height in the place skill.
 GRASP_HANG = 0.017
-
-_urdf = None
-
-
-def _resolve_urdf_path():
-    """URDF for FK/IK: env override -> legacy snapshot -> xacro (cached)."""
-    if os.path.exists(URDF_PATH):
-        return URDF_PATH
-    from ament_index_python.packages import get_package_share_directory
-    pkg = get_package_share_directory("agilus_robotiq_description")
-    xacro_file = os.path.join(pkg, "urdf", "agilus_robotiq.urdf.xacro")
-    controller_cfg = os.path.join(pkg, "config",
-                                  "agilus_robotiq_controllers.yaml")
-    cache = os.path.join(tempfile.gettempdir(),
-                         "nlra_agilus_robotiq_urdf.xml")
-    if not os.path.exists(cache):
-        out = subprocess.run(
-            ["xacro", xacro_file, f"controller_config:={controller_cfg}"],
-            capture_output=True, text=True, check=True)
-        with open(cache, "w") as f:
-            f.write(out.stdout)
-    return cache
-
-
-def _get_urdf():
-    global _urdf
-    if _urdf is None:
-        import yourdfpy
-        _urdf = yourdfpy.URDF.load(
-            _resolve_urdf_path(), load_meshes=False,
-            build_collision_scene_graph=False, load_collision_meshes=False)
-    return _urdf
-
-
-def _fk(q):
-    """Return (grasp_point, approach_dir, close_dir) for joint vector q.
-
-    grasp point = midpoint between the two fingertip links;
-    approach dir = unit vector from gripper base to that midpoint
-    (the direction the fingers point; must face down for a top grasp);
-    close dir  = unit vector from left fingertip to right fingertip
-    (the direction the fingers close; the gripper's local +x axis).
-    """
-    import numpy as np
-    u = _get_urdf()
-    u.update_cfg(dict(zip(ARM_JOINTS, q)))
-    Tl = u.get_transform("robotiq_85_left_finger_tip_link", "base_link")
-    Tr = u.get_transform("robotiq_85_right_finger_tip_link", "base_link")
-    Tb = u.get_transform("robotiq_85_base_link", "base_link")
-    mid = (Tl[:3, 3] + Tr[:3, 3]) / 2.0
-    v = mid - Tb[:3, 3]
-    n = np.linalg.norm(v)
-    approach = v / n if n > 1e-9 else np.array([0.0, 0.0, -1.0])
-    vc = Tr[:3, 3] - Tl[:3, 3]
-    n = np.linalg.norm(vc)
-    close = vc / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
-    return mid, approach, close
-
-
-def _ik_seed_matches(close_from_fk, close_dir):
-    """True if the FK-reported closing axis matches close_dir (same sign)."""
-    return (close_from_fk[0] * close_dir[0]
-            + close_from_fk[1] * close_dir[1]
-            + close_from_fk[2] * close_dir[2]) > 0.0
-
-
-def ik_top_down(x, y, z_grasp, seed=None):
-    """Numeric IK: put the grasp point at (x,y,z) with tool z pointing down.
-
-    Yaw about the approach axis is free (only the approach direction is
-    constrained). Returns [j1..j6] or None if no converged solution.
-
-    seed: a previous solution for a nearby pose. When given, it is tried
-    first and guarantees a solution on the same joint-space branch, so
-    consecutive moves interpolate smoothly instead of flipping the wrist
-    (e.g. j4 0 <-> -pi) and colliding with the tray/table mid-move.
-    """
-    import numpy as np
-    from scipy.optimize import least_squares
-
-    target = np.array([x, y, z_grasp])
-    down = np.array([0.0, 0.0, -1.0])
-
-    def resid(q):
-        pos, approach, _close = _fk(q)
-        # fingers must point straight down (-z) at the target point
-        return np.concatenate([
-            (pos - target) * 10.0,
-            (approach - down) * 3.0,
-        ])
-
-    yaw = math.atan2(y, x)
-    # the seed's j1 must lie inside the joint-1 limits ([-2.9671, 2.9671]):
-    # for targets whose bearing is near +/-pi the raw yaw would exceed them
-    # and least_squares would reject the seed outright
-    j1 = yaw - 2 * math.pi if yaw > 2.9671 else yaw
-    j1 = j1 + 2 * math.pi if j1 < -2.9671 else j1
-    seeds = [
-        [j1, -0.6, 1.8, 0.0, 1.0, 0.0],
-        [j1, -0.9, 1.5, 0.0, 1.2, 0.0],
-        [j1, -0.3, 2.0, 0.0, 0.8, 0.0],
-    ]
-    if seed is not None:
-        seeds.insert(0, list(seed))
-    # KUKA Agilus KR 16 R1100-3 joint limits (rad) from kuka_agilus_support URDF
-    lo = [-2.9671, -3.4034, -2.0071, -3.4907, -2.0944, -6.1087]
-    hi = [2.9671, 0.9599, 2.8798, 3.4907, 2.0944, 6.1087]
-    best = None
-    for s in seeds:
-        try:
-            r = least_squares(resid, s, bounds=(lo, hi), xtol=1e-10, max_nfev=200)
-        except Exception:
-            continue
-        if r.cost < 1e-5 and (best is None or r.cost < best.cost):
-            best = r
-    if best is None:
-        return None
-    return [float(v) for v in best.x]
-
-
-def ik_grasp(x, y, z_grasp, close_dir, seed=None):
-    """Numeric IK: grasp point at (x,y,z), fingers down, closing axis
-    parallel to close_dir.
-
-    close_dir is a horizontal unit vector the gripper's finger closing axis
-    must be parallel to (grasp parallel to the object). Both signs of the
-    axis are equivalent (symmetric fingers), so each seed is tried with both.
-    Returns [j1..j6] or None if no converged solution.
-
-    seed: a previous solution for a nearby pose. When given it is tried
-    first (with the close-axis sign matching its own geometry) and guarantees
-    a solution on the same joint-space branch, so consecutive moves
-    interpolate smoothly instead of flipping the wrist and colliding.
-    """
-    import numpy as np
-    from scipy.optimize import least_squares
-
-    target = np.array([x, y, z_grasp])
-    down = np.array([0.0, 0.0, -1.0])
-    cd = np.asarray(close_dir, dtype=float)
-    n = np.linalg.norm(cd)
-    cd = cd / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
-
-    def resid(q, close):
-        pos, approach, _close = _fk(q)
-        return np.concatenate([
-            (pos - target) * 10.0,
-            (approach - down) * 3.0,
-            (_close - close) * 3.0,
-        ])
-
-    # j1 seed = the target's bearing (the arm reaches (x,y) with j1 pointing
-    # at it), NOT the closing-axis yaw — that is handled by the wrist.
-    # Wrap into the joint-1 range [-2.9671, 2.9671] so seeds near +/-pi are
-    # still valid starting points instead of being rejected outright.
-    yaw = math.atan2(y, x)
-    j1 = yaw - 2 * math.pi if yaw > 2.9671 else yaw
-    j1 = j1 + 2 * math.pi if j1 < -2.9671 else j1
-    seeds = [
-        [j1, -0.6, 1.8, 0.0, 1.0, 0.0],
-        [j1, -0.9, 1.5, 0.0, 1.2, 0.0],
-        [j1, -0.3, 2.0, 0.0, 0.8, 0.0],
-        [j1, -0.6, 1.8, 0.0, 1.0, math.pi],
-    ]
-    if seed is not None:
-        # Continuation: the seed is a solution for a nearby (typically
-        # APPROACH_CLEARANCE higher) pose. Walk the target height down to the
-        # requested z in small increments, re-solving from the previous step,
-        # so the optimizer never takes a big jump and flips to the mirrored
-        # joint-space branch (j4 0 <-> -pi), which would make the descend
-        # swing through the tray. Falls back to the fixed seeds if any step
-        # fails to converge.
-        s = list(seed)
-        close = cd if _ik_seed_matches(_fk(s)[2], cd) else -cd
-        z0 = _fk(s)[0][2]
-        steps = max(1, int(math.ceil(abs(z_grasp - z0) / 0.05)))
-        cont_ok = True
-        for i in range(1, steps + 1):
-            target[2] = z0 + (z_grasp - z0) * i / steps
-            try:
-                r = least_squares(resid, s, args=(close,), bounds=(lo, hi),
-                                  xtol=1e-10, max_nfev=300)
-            except Exception:
-                r = None
-            if r is None or r.cost >= 1e-5:
-                cont_ok = False
-                break
-            s = r.x
-        # restore the requested target — the loop above mutates target[2],
-        # and the fallback seeds below must solve for the original z, not
-        # some intermediate continuation height
-        target[2] = z_grasp
-        if cont_ok:
-            return [float(v) for v in s]
-    # KUKA Agilus KR 16 R1100-3 joint limits (rad) from kuka_agilus_support URDF
-    lo = [-2.9671, -3.4034, -2.0071, -3.4907, -2.0944, -6.1087]
-    hi = [2.9671, 0.9599, 2.8798, 3.4907, 2.0944, 6.1087]
-    best = None
-    for s in seeds:
-        for close in (cd, -cd):
-            try:
-                r = least_squares(resid, s, args=(close,), bounds=(lo, hi),
-                                  xtol=1e-10, max_nfev=300)
-            except Exception:
-                continue
-            if r.cost < 1e-5 and (best is None or r.cost < best.cost):
-                best = r
-    if best is None:
-        return None
-    return [float(v) for v in best.x]
 
 
 class Orchestrator(Node):
@@ -305,8 +90,12 @@ class Orchestrator(Node):
         super().__init__("nlra_orchestrator")
         self._cb = ReentrantCallbackGroup()
 
-        self._move = ActionClient(self, MoveJoints, "skills/move_joints",
-                                  callback_group=self._cb)
+        self._move_joints = ActionClient(self, MoveJoints, "skills/move_joints",
+                                         callback_group=self._cb)
+        self._move_to = ActionClient(self, MoveTo, "skills/move_to",
+                                     callback_group=self._cb)
+        self._move_relative = ActionClient(self, MoveRelative, "skills/move_relative",
+                                           callback_group=self._cb)
         self._grasp = ActionClient(self, Grasp, "skills/grasp",
                                    callback_group=self._cb)
         self._release = ActionClient(self, Release, "skills/release",
@@ -336,7 +125,7 @@ class Orchestrator(Node):
 
     def _on_joint_state(self, msg):
         try:
-            idx = [msg.name.index(j) for j in ARM_JOINTS]
+            idx = [msg.name.index(j) for j in ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]]
         except ValueError:
             return
         self._joint_state = [msg.position[i] for i in idx]
@@ -413,6 +202,35 @@ class Orchestrator(Node):
         result = rfut.result().result
         return bool(result.success), result.message, result
 
+    def _move_relative_step(self, name, translation, reference_frame="tool0", duration=4.0):
+        goal = MoveRelative.Goal()
+        goal.translation = translation
+        goal.reference_frame = reference_frame
+        goal.velocity_scaling = 0.2
+        goal.acceleration_scaling = 0.2
+        return (name, lambda: self._call(self._move_relative, goal))
+
+    def _move_to_step(self, name, target_pose, duration=4.0):
+        goal = MoveTo.Goal()
+        goal.target = target_pose
+        goal.velocity_scaling = 0.2
+        goal.acceleration_scaling = 0.2
+        return (name, lambda: self._call(self._move_to, goal))
+
+    def _grasp_target_angle(self, width):
+        """Knuckle angle that presses an object of the given width.
+
+        The fingers contact the object when the pad gap equals its width.
+        Returning a target a small angle PAST the contact angle keeps a small
+        residual position error, so the gz velocity-based position servo
+        presses the object gently; the grasp skill detects that the fingers
+        are blocked (stall) and retains that low-force command through the
+        transfer.
+        """
+        width_cm = float(width) * 100.0
+        a_contact = (8.838 - width_cm) / 11.03
+        return min(GRIPPER_FULLY_CLOSED, max(0.0, a_contact + GRASP_PRESS_DELTA))
+
     # ---------------------------------------------------------------- plans
     def _plan_for(self, task, args):
         """Return list of (step_name, callable) or None."""
@@ -466,55 +284,21 @@ class Orchestrator(Node):
             except (TypeError, ValueError):
                 self._ground_err = f"joint '{name}': angle {deg!r} is not a number"
                 return None
-        return [self._move_step("move_joints", pos, 5.0)]
-
-    def _move_step(self, name, positions, duration=4.0):
         goal = MoveJoints.Goal()
-        goal.positions = positions
-        goal.duration = float(duration)
-        return (name, lambda: self._call(self._move, goal))
-
-    def _grasp_target_angle(self, width):
-        """Knuckle angle that presses an object of the given width.
-
-        The fingers contact the object when the pad gap equals its width.
-        Returning a target a small angle PAST the contact angle keeps a small
-        residual position error, so the gz velocity-based position servo
-        presses the object gently; the grasp skill detects that the fingers
-        are blocked (stall) and retains that low-force command through the
-        transfer.
-        """
-        width_cm = float(width) * 100.0
-        a_contact = (8.838 - width_cm) / 11.03
-        return min(GRIPPER_FULLY_CLOSED, max(0.0, a_contact + GRASP_PRESS_DELTA))
+        goal.positions = pos
+        goal.duration = 5.0
+        return [("move_joints", lambda: self._call(self._move_joints, goal))]
 
     def _pick_steps(self, obj_id):
         gpose, err = self._grasp_pose(obj_id)
         if gpose is None:
             self._ground_err = err
             return None
-        import numpy as np
-        from scipy.spatial.transform import Rotation
-        p = gpose.pose.position
-        q = gpose.pose.orientation
-        # gripper +x = finger closing axis (parallel to the object's axes)
-        close_dir = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()[:, 0]
-        x, y, z_grasp = p.x, p.y, p.z
-        # The gripper stays FULLY OPEN through the approach and the descend:
-        # the FK is computed with the knuckle open, so the descend target is
-        # the grasp point itself; closing starts only at the grasp pose.
-        jl_app = ik_grasp(x, y, z_grasp + APPROACH_CLEARANCE, close_dir)
-        # Seeded from the approach so both poses stay on one joint-space
-        # branch and the descend interpolates smoothly (no wrist flip).
-        jl_grasp = ik_grasp(x, y, z_grasp, close_dir, seed=jl_app)
-        # Same pose as the approach, but seeded from the grasp so the lift
-        # does not flip the wrist while holding the object.
-        jl_lift = ik_grasp(x, y, z_grasp + APPROACH_CLEARANCE, close_dir,
-                           seed=jl_grasp)
-        if None in (jl_app, jl_grasp, jl_lift):
-            self._ground_err = (f"'{obj_id}' at ({x:.2f},{y:.2f},{z_grasp:.2f}) "
-                                "unreachable with gripper parallel to object")
-            return None
+
+        # Remember the grasp orientation (tool pointing DOWN) so the place
+        # steps can reuse it — identity orientation would point the tool UP.
+        self._last_grasp_orientation = gpose.pose.orientation
+
         # Object width along the closing axis -> gentle press target angle.
         pose, perr = self._object_pose(obj_id)
         width = pose[3][0] if pose is not None else 0.05
@@ -522,13 +306,36 @@ class Orchestrator(Node):
         self.get_logger().info(
             f"grasp target angle for '{obj_id}' (w={width*100:.1f} cm): "
             f"{grasp_pos:.3f} rad")
+
+        # Absolute approach/grasp/lift poses in base_link (world == base_link
+        # in this sim; plan_to_pose transforms "world"->base_link if needed).
+        from geometry_msgs.msg import PoseStamped
+        # The world model's grasp pose is the FINGERTIP-MIDPOINT height; the
+        # planner moves pose_link="tool0", which sits TOOL0_FINGERTIP_OFFSET
+        # above the fingertips (tool0 +z points DOWN in the grasp orientation),
+        # so every absolute z target must be raised by that offset.
+        gz = gpose.pose.position.z + TOOL0_FINGERTIP_OFFSET
+
+        def _pose_at(z):
+            ps = PoseStamped()
+            ps.header.frame_id = "base_link"
+            ps.pose.position.x = gpose.pose.position.x
+            ps.pose.position.y = gpose.pose.position.y
+            ps.pose.position.z = z
+            ps.pose.orientation = gpose.pose.orientation
+            return ps
+
+        approach_pose = _pose_at(gz + APPROACH_CLEARANCE)
+        grasp_pose = _pose_at(gz)
+        lift_pose = _pose_at(gz + APPROACH_CLEARANCE)
+
         return [
             ("open_gripper", lambda: self._call(self._release, Release.Goal())),
-            self._move_step(f"approach:{obj_id}", jl_app),
-            self._move_step(f"descend:{obj_id}", jl_grasp, 2.5),
+            self._move_to_step(f"approach:{obj_id}", approach_pose),
+            self._move_to_step(f"descend:{obj_id}", grasp_pose, 2.5),
             (f"grasp:{obj_id}", lambda: self._grasp_step(
                 grasp_pos, GRIPPER_GRASP_EFFORT)),
-            self._move_step(f"lift:{obj_id}", jl_lift, 6.0),
+            self._move_to_step(f"lift:{obj_id}", lift_pose, 6.0),
         ]
 
     def _place_steps(self, tgt_id):
@@ -551,25 +358,47 @@ class Orchestrator(Node):
         # drop_z - GRASP_HANG - size[2]/2. Aim the bottom at the support, but
         # never lower the fingers below GRASP_RAISE so the closed fingertips
         # keep their clearance (same geometry constants as the world model —
-        # keep in sync).
-        drop_z = support + max(GRASP_RAISE, GRASP_HANG + size[2] / 2.0)
-        jl_above = ik_top_down(x, y, drop_z + 0.10)
-        # Seeded from jl_above so the lower stays on the same branch.
-        jl_drop = ik_top_down(x, y, drop_z, seed=jl_above)
-        # Seeded from jl_drop so the retreat does not flip the wrist while
-        # pulling the open fingers back out of the tray.
-        jl_retreat = ik_top_down(x, y, drop_z + 0.10, seed=jl_drop)
-        if None in (jl_above, jl_drop, jl_retreat):
-            self._ground_err = f"'{tgt_id}' at ({x:.2f},{y:.2f},{z:.2f}) unreachable"
-            return None
+        # keep in sync). As in the pick, the planner moves tool0, so the
+        # fingertip-midpoint drop height must be raised by the tool0 offset.
+        drop_z = support + max(GRASP_RAISE, GRASP_HANG + size[2] / 2.0) \
+            + TOOL0_FINGERTIP_OFFSET
+
+        # Create absolute poses for transfer, lower, retreat
+        from geometry_msgs.msg import PoseStamped, Pose
+        # Keep the tool pointing DOWN (the orientation the object was picked
+        # with). Identity (w=1.0) would point the tool UP. Fall back to
+        # identity only if no pick happened in this process yet.
+        orient = getattr(self, "_last_grasp_orientation", None)
+        if orient is None:
+            from geometry_msgs.msg import Quaternion
+            orient = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+
+        above_pose = PoseStamped()
+        above_pose.header.frame_id = "base_link"
+        above_pose.pose.position.x = x
+        above_pose.pose.position.y = y
+        above_pose.pose.position.z = drop_z + 0.10
+        above_pose.pose.orientation = orient
+
+        drop_pose = PoseStamped()
+        drop_pose.header.frame_id = "base_link"
+        drop_pose.pose.position.x = x
+        drop_pose.pose.position.y = y
+        drop_pose.pose.position.z = drop_z
+        drop_pose.pose.orientation = orient
+
+        retreat_pose = PoseStamped()
+        retreat_pose.header.frame_id = "base_link"
+        retreat_pose.pose.position.x = x
+        retreat_pose.pose.position.y = y
+        retreat_pose.pose.position.z = drop_z + 0.10
+        retreat_pose.pose.orientation = orient
+
         return [
-            self._move_step(f"transfer:{tgt_id}", jl_above),
-            # The cube is held by the squeeze force (effort grip) during the
-            # transfer; releasing happens at the drop pose via the release
-            # skill, which opens the fingers and lets the cube drop.
-            self._move_step(f"lower:{tgt_id}", jl_drop, 2.5),
+            self._move_to_step(f"transfer:{tgt_id}", above_pose),
+            self._move_to_step(f"lower:{tgt_id}", drop_pose, 2.5),
             (f"release:{tgt_id}", lambda: self._call(self._release, Release.Goal())),
-            self._move_step(f"retreat:{tgt_id}", jl_retreat, 2.5),
+            self._move_to_step(f"retreat:{tgt_id}", retreat_pose, 2.5),
         ]
 
     # ------------------------------------------------------------- executor

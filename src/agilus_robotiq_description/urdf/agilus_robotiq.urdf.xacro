@@ -98,31 +98,31 @@
       <state_interface name="velocity"/>
       <state_interface name="effort"/>
     </joint>
-    <joint name="${prefix}robotiq_85_right_knuckle_joint">
+    <joint name="${prefix}robotiq_85_right_knuckle_joint" mimic="false">
       <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
       <param name="multiplier">-1</param>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="${prefix}robotiq_85_left_inner_knuckle_joint">
+    <joint name="${prefix}robotiq_85_left_inner_knuckle_joint" mimic="false">
       <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
       <param name="multiplier">1</param>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="${prefix}robotiq_85_right_inner_knuckle_joint">
+    <joint name="${prefix}robotiq_85_right_inner_knuckle_joint" mimic="false">
       <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
       <param name="multiplier">-1</param>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="${prefix}robotiq_85_left_finger_tip_joint">
+    <joint name="${prefix}robotiq_85_left_finger_tip_joint" mimic="false">
       <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
       <param name="multiplier">-1</param>
       <state_interface name="position"/>
       <state_interface name="velocity"/>
     </joint>
-    <joint name="${prefix}robotiq_85_right_finger_tip_joint">
+    <joint name="${prefix}robotiq_85_right_finger_tip_joint" mimic="false">
       <param name="mimic">${prefix}robotiq_85_left_knuckle_joint</param>
       <param name="multiplier">1</param>
       <state_interface name="position"/>

@@ -8,10 +8,13 @@
 
   <depend>rclpy</depend>
   <depend>nlra_interfaces</depend>
+  <depend>nlra_motion_planner</depend>
   <depend>control_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
   <depend>builtin_interfaces</depend>
+  <depend>geometry_msgs</depend>
+  <depend>moveit_py</depend>
 
   <export>
     <build_type>ament_python</build_type>
