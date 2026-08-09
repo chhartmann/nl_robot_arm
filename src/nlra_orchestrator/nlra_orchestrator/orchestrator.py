@@ -21,7 +21,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
-from geometry_msgs.msg import Vector3, Quaternion
+from geometry_msgs.msg import PoseStamped, Vector3, Quaternion
 from nlra_interfaces.action import ExecuteTask, Grasp, Home, MoveJoints, MoveTo, MoveRelative, MoveAxis, Release
 from nlra_interfaces.srv import GetGraspPose, GetObjectPose
 from sensor_msgs.msg import JointState
@@ -96,6 +96,8 @@ class Orchestrator(Node):
                                      callback_group=self._cb)
         self._move_relative = ActionClient(self, MoveRelative, "skills/move_relative",
                                            callback_group=self._cb)
+        self._move_axis = ActionClient(self, MoveAxis, "skills/move_axis",
+                                       callback_group=self._cb)
         self._grasp = ActionClient(self, Grasp, "skills/grasp",
                                    callback_group=self._cb)
         self._release = ActionClient(self, Release, "skills/release",
@@ -121,7 +123,8 @@ class Orchestrator(Node):
                      cancel_callback=lambda _h: CancelResponse.ACCEPT,
                      callback_group=self._cb)
         self.get_logger().info(
-            "orchestrator up: tasks home, pick, place, pick_and_place, move_joints")
+            "orchestrator up: tasks home, pick, place, pick_and_place, "
+            "move_joints, move_axis, move_relative, move_to, grasp, release")
 
     def _on_joint_state(self, msg):
         try:
@@ -260,6 +263,21 @@ class Orchestrator(Node):
 
         if task == "move_joints":
             return self._move_joints_steps(args)
+
+        if task == "move_axis":
+            return self._move_axis_steps(args)
+
+        if task == "move_relative":
+            return self._move_relative_steps(args)
+
+        if task == "move_to":
+            return self._move_to_steps(args)
+
+        if task == "grasp":
+            return self._grasp_steps(args)
+
+        if task == "release":
+            return self._release_steps(args)
         return None
 
     def _move_joints_steps(self, args):
@@ -289,6 +307,104 @@ class Orchestrator(Node):
         goal.duration = 5.0
         return [("move_joints", lambda: self._call(self._move_joints, goal))]
 
+    def _move_axis_steps(self, args):
+        """Ground {'joints': {a1: 90}, 'relative': false} to a MoveAxis goal.
+
+        move_axis plans a subset of joints through MoveIt and supports
+        relative deltas, unlike move_joints (raw single-point trajectory,
+        absolute only).
+        """
+        joints = args.get("joints", {})
+        if not isinstance(joints, dict) or not joints:
+            self._ground_err = ("move_axis requires a 'joints' map, "
+                                "e.g. {\"a1\": 90}")
+            return None
+        names, positions = [], []
+        for name, deg in joints.items():
+            idx = JOINT_INDEX.get(str(name).strip().lower())
+            if idx is None:
+                self._ground_err = (f"unknown joint '{name}' — use a1..a6 or "
+                                    "joint_1..joint_6")
+                return None
+            try:
+                positions.append(math.radians(float(deg)))
+            except (TypeError, ValueError):
+                self._ground_err = f"joint '{name}': angle {deg!r} is not a number"
+                return None
+            names.append(f"joint_{idx + 1}")
+        goal = MoveAxis.Goal()
+        goal.joint_names = names
+        goal.positions = positions
+        goal.relative = bool(args.get("relative", False))
+        goal.velocity_scaling = 0.2
+        goal.acceleration_scaling = 0.2
+        return [("move_axis", lambda: self._call(self._move_axis, goal))]
+
+    def _move_relative_steps(self, args):
+        """Ground {'translation': {z: 0.1}, 'rotation_delta': {...},
+        'reference_frame': 'base_link'} to a MoveRelative goal."""
+        t = args.get("translation", {})
+        if not isinstance(t, dict):
+            self._ground_err = ("move_relative requires a 'translation' map, "
+                                "e.g. {\"z\": 0.1}")
+            return None
+        trans = Vector3()
+        trans.x = float(t.get("x", 0.0))
+        trans.y = float(t.get("y", 0.0))
+        trans.z = float(t.get("z", 0.0))
+        if trans.x == trans.y == trans.z == 0.0:
+            self._ground_err = "move_relative: translation must be non-zero"
+            return None
+
+        # Skill treats an all-zero quaternion as "no rotation change"; a
+        # w=1.0 identity would be read as a rotation to the identity pose.
+        rotation_delta = Quaternion(x=0.0, y=0.0, z=0.0, w=0.0)
+        rot = args.get("rotation_delta")
+        if isinstance(rot, dict):
+            rotation_delta.x = float(rot.get("x", 0.0))
+            rotation_delta.y = float(rot.get("y", 0.0))
+            rotation_delta.z = float(rot.get("z", 0.0))
+            rotation_delta.w = float(rot.get("w", 0.0))
+
+        frame = args.get("reference_frame", "tool0")
+        goal = MoveRelative.Goal()
+        goal.translation = trans
+        goal.rotation_delta = rotation_delta
+        goal.reference_frame = str(frame)
+        goal.velocity_scaling = 0.2
+        goal.acceleration_scaling = 0.2
+        return [("move_relative", lambda: self._call(self._move_relative, goal))]
+
+    def _move_to_steps(self, args):
+        """Ground {'pose': {x, y, z, ...}, 'frame_id': ...} to a MoveTo goal."""
+        p = args.get("pose", {})
+        if not isinstance(p, dict) or "x" not in p or "y" not in p or "z" not in p:
+            self._ground_err = ("move_to requires a 'pose' map with x, y, z, "
+                                "e.g. {\"x\": 0.4, \"y\": 0.1, \"z\": 0.5}")
+            return None
+        ps = PoseStamped()
+        ps.header.frame_id = str(args.get("frame_id", "base_link"))
+        ps.pose.position.x = float(p["x"])
+        ps.pose.position.y = float(p["y"])
+        ps.pose.position.z = float(p["z"])
+        ps.pose.orientation.x = float(p.get("rx", 0.0))
+        ps.pose.orientation.y = float(p.get("ry", 0.0))
+        ps.pose.orientation.z = float(p.get("rz", 0.0))
+        ps.pose.orientation.w = float(p.get("rw", 1.0))
+        return self._move_to_step("move_to", ps)
+
+    def _grasp_steps(self, args):
+        """Close the gripper (standalone). Reports success like the raw skill."""
+        position = min(GRIPPER_FULLY_CLOSED,
+                       max(0.0, float(args.get("position", GRIPPER_FULLY_CLOSED))))
+        effort = float(args.get("max_effort", GRIPPER_GRASP_EFFORT))
+        goal = Grasp.Goal(position=position, max_effort=effort)
+        return [("grasp", lambda: self._call(self._grasp, goal))]
+
+    def _release_steps(self, args):
+        """Open the gripper (standalone)."""
+        return [("release", lambda: self._call(self._release, Release.Goal()))]
+
     def _pick_steps(self, obj_id):
         gpose, err = self._grasp_pose(obj_id)
         if gpose is None:
@@ -309,7 +425,6 @@ class Orchestrator(Node):
 
         # Absolute approach/grasp/lift poses in base_link (world == base_link
         # in this sim; plan_to_pose transforms "world"->base_link if needed).
-        from geometry_msgs.msg import PoseStamped
         # The world model's grasp pose is the FINGERTIP-MIDPOINT height; the
         # planner moves pose_link="tool0", which sits TOOL0_FINGERTIP_OFFSET
         # above the fingertips (tool0 +z points DOWN in the grasp orientation),
@@ -364,7 +479,6 @@ class Orchestrator(Node):
             + TOOL0_FINGERTIP_OFFSET
 
         # Create absolute poses for transfer, lower, retreat
-        from geometry_msgs.msg import PoseStamped, Pose
         # Keep the tool pointing DOWN (the orientation the object was picked
         # with). Identity (w=1.0) would point the tool UP. Fall back to
         # identity only if no pick happened in this process yet.

@@ -43,21 +43,55 @@ TOOLS = [{
             "pick_and_place moves an object into/onto a target. "
             "pick only grasps and lifts. place puts a held object on a target. "
             "home returns the arm to its rest pose. "
-            "move_joints moves individual joints to given angles."),
+            "move_joints moves the whole arm to absolute joint angles. "
+            "move_axis moves a subset of joints, absolute or relative. "
+            "move_relative moves the gripper by a relative translation (and "
+            "optional orientation delta) in a reference frame. "
+            "move_to moves the gripper to an absolute Cartesian pose. "
+            "grasp closes the gripper. release opens the gripper."),
         "parameters": {
             "type": "object",
             "properties": {
                 "task": {"type": "string",
                          "enum": ["home", "pick", "place", "pick_and_place",
-                                  "move_joints"]},
+                                  "move_joints", "move_axis", "move_relative",
+                                  "move_to", "grasp", "release"]},
                 "object_id": {"type": "string",
                               "description": "id of the object to manipulate"},
                 "target_id": {"type": "string",
                               "description": "id of the destination object"},
                 "joints": {"type": "object",
-                           "description": ("only for move_joints: map of joint "
-                                           "id -> target angle in degrees, e.g. "
-                                           "{\"a1\": 90, \"a3\": -45}")},
+                           "description": ("only for move_joints / move_axis: "
+                                           "map of joint id -> angle in "
+                                           "degrees, e.g. {\"a1\": 90, "
+                                           "\"a3\": -45}")},
+                "relative": {"type": "boolean",
+                             "description": ("only for move_axis: if true, "
+                                             "joint values are deltas from the "
+                                             "current pose, not absolute")},
+                "translation": {"type": "object",
+                                "description": ("only for move_relative: map of "
+                                                "axis -> meters, e.g. {\"z\": "
+                                                "0.1} (positive z is up in "
+                                                "base_link)")},
+                "rotation_delta": {"type": "object",
+                                   "description": ("only for move_relative: "
+                                                   "optional orientation delta "
+                                                   "as a quaternion map {x, y, "
+                                                   "z, w}; omit for pure "
+                                                   "translation")},
+                "reference_frame": {"type": "string",
+                                    "description": ("only for move_relative: "
+                                                    "frame the delta is "
+                                                    "expressed in; \"tool0\" "
+                                                    "(default) is gripper-"
+                                                    "relative, \"base_link\" is "
+                                                    "world axes")},
+                "pose": {"type": "object",
+                         "description": ("only for move_to: absolute target "
+                                         "pose map with x, y, z (meters) and "
+                                         "optional rx, ry, rz, rw (quaternion) "
+                                         "in base_link")},
             },
             "required": ["task"],
         },
@@ -100,7 +134,16 @@ SYSTEM_TMPL = (
     "For joint motion use move_joints with 'joints': {{\"a1\": 90}}. Joint ids "
     "are a1..a6 (a.k.a. joint_1..joint_6), angles in degrees, absolute "
     "targets (not relative), within limits: a1: -170..170; a2: -195..55; "
-    "a3: -115..165; a4: -200..200; a5: -120..120; a6: -350..350.\n\n"
+    "a3: -115..165; a4: -200..200; a5: -120..120; a6: -350..350. "
+    "Use move_axis instead when moving only a few joints, or to apply a "
+    "relative delta ('relative': true, degrees).\n\n"
+    "For relative gripper motion use move_relative with a 'translation' map in "
+    "meters and, for world-aligned moves (up/down/left/right/forward), set "
+    "'reference_frame': 'base_link' (e.g. 'move 10 cm up' -> {{\"translation\": "
+    "{{\"z\": 0.1}}, \"reference_frame\": \"base_link\"}}). Omit reference_frame "
+    "for gripper-relative motion (default 'tool0'). For an absolute Cartesian "
+    "target use move_to with a 'pose' map {{x, y, z}} in base_link. "
+    "grasp closes the gripper, release opens it.\n\n"
     "Objects currently visible (id | kind | graspable | position):\n{objects}")
 
 
