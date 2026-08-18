@@ -41,6 +41,9 @@ def generate_launch_description():
         name="object_pose_bridge",
         arguments=[
             "/model/red_cube/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
+            "/model/green_cube/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
+            "/model/yellow_cylinder/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
+            "/model/orange_block/pose@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
             "/model/blue_box/pose_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
             "/model/table/pose_static@tf2_msgs/msg/TFMessage[gz.msgs.Pose_V",
         ],

@@ -140,7 +140,7 @@ verified in sim (headless, aarch64 + x86_64). As-built notes inline below.**
 - **Done when:** each skill callable via CLI; pick+place works with hardcoded poses. ✅
 
 ### Phase 3 — World Model + perception — ✅ DONE (4/4 checks)
-- [x] Tabletop scene + colored objects (red_cube dynamic, blue_box tray, table)
+- [x] Tabletop scene + colored objects (red_cube, green_cube, yellow_cylinder, orange_block dynamic; blue_box tray, table static)
 - [x] World poses via **per-model PosePublisher** (ground truth); static models need `pose_static` topic
 - [x] `nlra_world_model`: `get_objects` / `get_object_pose` / `get_grasp_pose` services
 - [x] `get_grasp_pose` answers "where/how to grasp an object" and by default returns the gripper parallel to the object (approach from above, finger closing axis aligned with the object's yaw); pick uses it, so pick grasps are orientation-aligned instead of yaw-agnostic

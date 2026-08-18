@@ -37,6 +37,11 @@ from nlra_interfaces.srv import GetGraspPose, GetObjectPose, GetObjects
 # Poses come live from Gazebo; this is the semantic annotation.
 CATALOG = {
     "red_cube": {"kind": "cube", "size": (0.05, 0.05, 0.05), "graspable": True},
+    "green_cube": {"kind": "cube", "size": (0.04, 0.04, 0.04), "graspable": True},
+    "yellow_cylinder": {"kind": "cylinder", "size": (0.04, 0.04, 0.06),
+                        "graspable": True},
+    "orange_block": {"kind": "block", "size": (0.03, 0.03, 0.06),
+                     "graspable": True},
     "blue_box": {"kind": "tray", "size": (0.16, 0.16, 0.08), "graspable": False},
     "table": {"kind": "table", "size": (0.8, 0.8, 0.4), "graspable": False},
 }
