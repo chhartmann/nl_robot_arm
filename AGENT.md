@@ -16,7 +16,7 @@ pixi run build
 pixi shell
 
 # Run full stack
-ros2 launch nlra_bringup nlra.launch.py
+pixi run sim_headless
 ```
 
 All commands below assume you are inside `pixi shell` (or have run `pixi run`).
