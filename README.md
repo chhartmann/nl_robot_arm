@@ -41,6 +41,20 @@ Natural-language GUI / terminal REPL
 
 The LLM proposes a structured task; it does not directly actuate the robot. The orchestrator resolves object IDs and calls typed ROS 2 actions. Current perception uses Gazebo ground truth rather than camera-based detection.
 
+## Screenshots
+
+### Gazebo simulation
+
+The Agilus arm, Robotiq gripper, tabletop, and scene objects running in Gazebo Harmonic:
+
+![Gazebo simulation showing the Agilus arm and tabletop scene](docs/images/gazebo.png)
+
+### Web UI
+
+The browser-based interface for joint control, TCP jogging, gripper control, diagnostics, and natural-language commands:
+
+![NL Robot Arm WebUI showing manual control and 3D view](docs/images/webui.png)
+
 ## Prerequisites
 
 - Linux on `x86_64` or `aarch64` (the Pixi workspace declares both platforms).
