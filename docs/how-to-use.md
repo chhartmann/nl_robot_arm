@@ -58,8 +58,8 @@ ros2 launch nlra_bringup nlra.launch.py nl:=false
 | 30    | world model + MoveIt `move_group`           |
 | 40    | skill servers (embed the MoveItPy motion planner) |
 | 45    | orchestrator                                |
-| 50    | NL interface                                |
-| 55    | NL chat GUI                                 |
+| 50    | NL interface + rosbridge                      |
+| 55    | web UI (http://localhost:8080)               |
 
 Each node is independently restartable at runtime.
 
@@ -79,8 +79,10 @@ ros2 run nlra_world_model world_model
 ros2 run nlra_skills skill_servers
 ros2 run nlra_orchestrator orchestrator
 ros2 run nlra_nl_interface nl_interface
-ros2 run nlra_nl_interface nl_gui
 ```
+
+For the web UI (manual control, NL chat, diagnostics), the full stack launch
+starts rosbridge + web server automatically. Open http://localhost:8080 in a browser.
 
 For the `move_to` / `move_relative` / `move_axis` skills to plan, a MoveIt
 `move_group` must be running (the full stack launches it automatically; on a

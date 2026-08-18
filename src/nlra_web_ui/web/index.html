@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NL Robot Arm — Web UI</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header>
+    <h1>NL Robot Arm</h1>
+    <nav id="nav">
+      <button class="tab active" data-page="control">Manual Control</button>
+      <button class="tab" data-page="chat">NL Chat</button>
+      <button class="tab" data-page="diagnostics">Diagnostics</button>
+    </nav>
+    <div id="conn-status" class="disconnected">
+      <span class="dot"></span>
+      <span id="conn-text">disconnected</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- Manual Control Page -->
+    <section id="page-control" class="page active">
+      <div class="control-layout">
+        <div class="joints-panel">
+          <h2>Joint Control</h2>
+          <div id="joint-sliders"></div>
+          <button id="btn-set-joints" class="primary">Set Joints</button>
+          <button id="btn-home">Home</button>
+        </div>
+        <div class="gripper-panel">
+          <h2>Gripper</h2>
+          <div class="gripper-control">
+            <label>Gripper Position</label>
+            <input type="range" id="gripper-slider" min="0" max="0.8" step="0.01" value="0">
+            <span id="gripper-value">0.00 rad</span>
+          </div>
+          <button id="btn-grasp">Grasp (Close)</button>
+          <button id="btn-release">Release (Open)</button>
+        </div>
+        <div class="viz-panel">
+          <h2>3D View</h2>
+          <div id="robot-viz"></div>
+        </div>
+      </div>
+      <div id="control-feedback" class="feedback-bar hidden"></div>
+    </section>
+
+    <!-- NL Chat Page -->
+    <section id="page-chat" class="page">
+      <div class="chat-layout">
+        <div id="chat-log" class="chat-log">
+          <div class="chat-hint">Ask the robot — e.g. "put the red cube into the blue tray"</div>
+        </div>
+        <div id="chat-progress" class="chat-progress hidden"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Type a command and press Enter…">
+          <button id="btn-chat-send" class="primary">Send</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Diagnostics Page -->
+    <section id="page-diagnostics" class="page">
+      <div class="diag-layout">
+        <div class="diag-card">
+          <h2>Joint States</h2>
+          <table id="diag-joints">
+            <thead><tr><th>Joint</th><th>Position (rad)</th><th>Velocity (rad/s)</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="diag-card">
+          <h2>Controller Status</h2>
+          <div id="diag-controllers">—</div>
+        </div>
+        <div class="diag-card">
+          <h2>Motion Planner</h2>
+          <div id="diag-planner">—</div>
+        </div>
+        <div class="diag-card">
+          <h2>World Model Objects</h2>
+          <table id="diag-objects">
+            <thead><tr><th>ID</th><th>Kind</th><th>Position</th><th>Graspable</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="diag-card">
+          <h2>Gripper Sensor</h2>
+          <div id="diag-gripper">—</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ROS libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/roslib@1.4.1/build/roslib.min.js"></script>
+  <!-- three r147: the examples/js UMD builds (OrbitControls, loaders) used by
+       URDFLoader were removed from the package after r148, so newer releases
+       404 on these paths. -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/loaders/STLLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/loaders/ColladaLoader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/urdf-loader@0.10.4/umd/URDFLoader.js"></script>
+
+  <!-- App modules -->
+  <script src="js/ros_connection.js"></script>
+  <script src="js/control.js"></script>
+  <script src="js/chat.js"></script>
+  <script src="js/diagnostics.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

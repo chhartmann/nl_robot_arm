@@ -12,6 +12,8 @@
   <exec_depend>nlra_skills</exec_depend>
   <exec_depend>nlra_orchestrator</exec_depend>
   <exec_depend>nlra_nl_interface</exec_depend>
+  <exec_depend>nlra_web_ui</exec_depend>
+  <exec_depend>rosbridge_suite</exec_depend>
   <exec_depend>ros_gz_bridge</exec_depend>
 
   <export>

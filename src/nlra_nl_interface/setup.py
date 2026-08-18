@@ -19,7 +19,6 @@ setup(
     entry_points={
         "console_scripts": [
             "nl_interface = nlra_nl_interface.nl_interface:main",
-            "nl_gui = nlra_nl_interface.nl_gui:main",
         ],
     },
 )

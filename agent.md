@@ -66,8 +66,9 @@ src/
   nlra_skills/                    Move/grasp/release/home action servers
   nlra_world_model/               Ground-truth object and grasp-pose services
   nlra_orchestrator/              Task grounding, MoveIt-backed sequencing/retry
-  nlra_nl_interface/              LLM-backed /nl_command service and NL GUI
-  nlra_bringup/                   Single launch file for the complete stack
+   nlra_nl_interface/              LLM-backed /nl_command service
+   nlra_web_ui/                     Web UI: manual control, NL chat, diagnostics
+   nlra_bringup/                   Single launch file for the complete stack
 ```
 
 Generated or local-only directories include `build/`, `install/`, `log/`, and
@@ -141,7 +142,7 @@ pixi run ros2 launch nlra_bringup nlra.launch.py
 The full launch starts components in stages: Gazebo and the robot first, the
 pose bridge at about 25 seconds, world model and MoveIt `move_group` at about
 30 seconds, skill servers at about 40 seconds, orchestrator at about 45
-seconds, and the NL interface (+ chat GUI) at about 50–55 seconds. Allow the
+seconds, and the NL interface + web UI at about 50–55 seconds. Allow the
 stack to finish starting before sending commands.
 
 The robot-only launch is also available:
@@ -157,8 +158,9 @@ The standalone skill launch is useful when Gazebo is already running:
 ros2 launch nlra_skills skills.launch.py
 ```
 
-The NL interface opens a GUI when a display is available and otherwise uses a
-terminal REPL. It requires an LLM key for actual language commands.
+The NL interface exposes an `/nl_command` service. The web UI connects via
+rosbridge and provides manual control, NL chat, and diagnostics. It requires
+an LLM key for actual language commands.
 
 ## NL Configuration
 

@@ -104,7 +104,8 @@ nl_robot_arm/                      # colcon workspace root (pixi-managed)
 │   ├── nlra_skills/                      # skill action servers (move_joints, move_to, move_relative, move_axis, grasp, release, home)
 │   ├── nlra_world_model/                 # world model services (get_objects, get_object_pose, get_grasp_pose) — ground-truth poses
 │   ├── nlra_orchestrator/                # task planner: grounding + MoveIt-backed skill sequencing + retry + postcondition
-│   ├── nlra_nl_interface/                # LLM function-calling NL front-end (/nl_command) + chat GUI
+│   ├── nlra_nl_interface/                # LLM function-calling NL front-end (/nl_command service)
+│   ├── nlra_web_ui/                       # web UI: manual control, NL chat, diagnostics (rosbridge + vanilla JS)
 │   └── nlra_bringup/                     # single ros2 launch for the whole stack
 ```
 Note (as-built vs. original plan): a separate vision `nlra_perception` package

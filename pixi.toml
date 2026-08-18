@@ -32,6 +32,8 @@ ros-jazzy-robotiq-description = "*"            # Robotiq 2F-85 URDF
 # --- Behavior trees for the orchestrator ---
 ros-jazzy-py-trees = "*"
 ros-jazzy-py-trees-ros = "*"
+# --- Web UI ---
+ros-jazzy-rosbridge-suite = "*"
 # --- Build toolchain (conda-forge) ---
 colcon-common-extensions = "*"
 compilers = "*"
