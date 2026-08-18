@@ -13,6 +13,8 @@ const ControlPage = (() => {
 
   let sliders = {};
   let sliderValues = {};
+  let touched = {};
+  let gripperTouched = false;
   let robotModel = null;
   let scene, camera, renderer, controls;
   let jointStateSub = null;
@@ -45,6 +47,7 @@ const ControlPage = (() => {
         const deg = parseFloat(slider.value);
         document.getElementById(`jv-${j.name}`).textContent = deg.toFixed(1) + '°';
         sliderValues[j.name] = deg;
+        touched[j.name] = true;
         updateRobotModel();
       });
       sliders[j.name] = slider;
@@ -62,6 +65,7 @@ const ControlPage = (() => {
     gs.addEventListener('input', () => {
       document.getElementById('gripper-value').textContent =
         parseFloat(gs.value).toFixed(2) + ' rad';
+      gripperTouched = true;
       updateRobotModel();
     });
   }
@@ -82,6 +86,10 @@ const ControlPage = (() => {
       }
     ).then((res) => {
       const r = res.result || res;
+      if (r.success) {
+        touched = {};
+        gripperTouched = false;
+      }
       showFeedback(r.success ? 'success' : 'error',
         r.success ? 'Joints set successfully' : `Failed: ${r.message}`);
     }).catch((err) => {
@@ -118,6 +126,7 @@ const ControlPage = (() => {
       }
     ).then((res) => {
       const r = res.result || res;
+      if (r.success) gripperTouched = false;
       showFeedback(r.success ? 'success' : 'error',
         r.object_detected ? 'Object gripped' : (r.message || 'Grasp done'));
     }).catch((err) => showFeedback('error', `Grasp error: ${err}`));
@@ -134,6 +143,7 @@ const ControlPage = (() => {
       }
     ).then((res) => {
       const r = res.result || res;
+      if (r.success) gripperTouched = false;
       showFeedback(r.success ? 'success' : 'error',
         r.success ? 'Gripper open' : `Failed: ${r.message}`);
     }).catch((err) => showFeedback('error', `Release error: ${err}`));
@@ -147,6 +157,8 @@ const ControlPage = (() => {
     }
     document.getElementById('gripper-slider').value = 0;
     document.getElementById('gripper-value').textContent = '0.00 rad';
+    touched = {};
+    gripperTouched = false;
     updateRobotModel();
   }
 
@@ -385,13 +397,13 @@ const ControlPage = (() => {
         for (let i = 0; i < msg.name.length; i++) {
           const name = msg.name[i];
           const j = JOINTS.find(j => j.name === name);
-          if (j) {
+          if (j && !touched[name]) {
             const deg = msg.position[i] * 180 / Math.PI;
             sliders[name].value = deg;
             sliderValues[name] = deg;
             document.getElementById(`jv-${name}`).textContent = deg.toFixed(1) + '°';
           }
-          if (name === GRIPPER.name) {
+          if (name === GRIPPER.name && !gripperTouched) {
             document.getElementById('gripper-slider').value = msg.position[i];
             document.getElementById('gripper-value').textContent =
               msg.position[i].toFixed(2) + ' rad';
