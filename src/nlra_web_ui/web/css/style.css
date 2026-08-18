@@ -112,10 +112,11 @@ button.primary:hover { background: var(--accent); }
 .control-layout {
   display: grid;
   grid-template-columns: minmax(220px, 0.8fr) minmax(220px, 0.8fr) minmax(360px, 1.4fr);
+  grid-template-rows: auto 190px;
   gap: 1rem;
 }
 
-.joints-panel, .gripper-panel, .viz-panel, .chat-panel {
+.joints-panel, .cartesian-panel, .gripper-panel, .viz-panel, .chat-panel {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -164,6 +165,26 @@ button.primary:hover { background: var(--accent); }
 .joint-row .joint-val { font-size: 0.8rem; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
 .joint-range { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.65rem; text-align: right; }
 
+#cartesian-controls { display: flex; flex-direction: column; gap: 0.65rem; }
+
+.cartesian-row {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr 2.5rem;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.cartesian-reading {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  align-items: baseline;
+  column-gap: 0.35rem;
+}
+
+.cartesian-label { font-size: 0.8rem; font-weight: 600; }
+.cartesian-value { font-size: 0.8rem; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.cartesian-step { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.7rem; text-align: right; }
+
 .gripper-control {
   margin-bottom: 1rem;
 }
@@ -174,13 +195,15 @@ button.primary:hover { background: var(--accent); }
 
 #robot-viz {
   width: 100%;
-  height: 400px;
+  height: 340px;
   background: var(--surface2);
   border-radius: var(--radius);
   overflow: hidden;
 }
 
 .joints-panel > button, .gripper-panel button { width: 100%; margin-top: 0.5rem; }
+.gripper-panel .gripper-control { margin-bottom: 0.25rem; }
+.gripper-panel button { padding: 0.35rem 1rem; margin-top: 0.25rem; }
 
 .feedback-bar {
   margin-top: 0.75rem;
@@ -200,10 +223,12 @@ button.primary:hover { background: var(--accent); }
 .chat-layout {
   display: flex;
   flex-direction: column;
-  height: 400px;
+  height: 128px;
 }
 
-.chat-panel { grid-column: 1 / -1; }
+.viz-panel { grid-column: 3; grid-row: 1; }
+.gripper-panel { grid-column: 1; grid-row: 2; height: 190px; overflow: hidden; }
+.chat-panel { grid-column: 2 / 4; grid-row: 2; height: 190px; overflow: hidden; }
 
 .chat-log {
   flex: 1;
@@ -304,6 +329,9 @@ td { font-variant-numeric: tabular-nums; }
 .badge.warn { background: rgba(251,191,36,0.15); color: var(--warning); }
 
 @media (max-width: 900px) {
-  .control-layout { grid-template-columns: 1fr; }
+  .control-layout { grid-template-columns: 1fr; grid-template-rows: auto; }
+  .viz-panel, .gripper-panel, .chat-panel { grid-column: auto; grid-row: auto; height: auto; overflow: visible; }
+  #robot-viz { height: 320px; }
+  .chat-layout { height: 260px; }
   .diag-layout { grid-template-columns: 1fr; }
 }

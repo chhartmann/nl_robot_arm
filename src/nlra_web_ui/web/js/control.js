@@ -13,11 +13,22 @@ const ControlPage = (() => {
   const AXIS_STEP_DEG = 5;
   const AXIS_REPEAT_DELAY_MS = 80;
   const AXIS_MOVE_DURATION_SEC = 0.5;
+  const CARTESIAN_STEP_M = 0.01;
+  const CARTESIAN_REPEAT_DELAY_MS = 80;
+  const CARTESIAN_VELOCITY_SCALING = 0.3;
+  // base_link is fixed to world in the simulation and provides world-aligned axes.
+  const CARTESIAN_REFERENCE_FRAME = 'base_link';
+  const CARTESIAN_AXES = [
+    { name: 'x', label: 'X' },
+    { name: 'y', label: 'Y' },
+    { name: 'z', label: 'Z' },
+  ];
 
   let jointValues = {};
   let gripperValue = 0;
   let gripperTarget = 0;
   const axisMoves = new Map();
+  const cartesianMoves = new Map();
   let robotModel = null;
   let robotScene = null;
   let robotLoadGeneration = 0;
@@ -26,6 +37,7 @@ const ControlPage = (() => {
 
   function init() {
     buildAxisControls();
+    buildCartesianControls();
     bindButtons();
     try {
       initThreeJS();
@@ -62,26 +74,68 @@ const ControlPage = (() => {
 
       row.querySelectorAll('.axis-button').forEach((button) => {
         const direction = Number(button.dataset.direction);
-        button.addEventListener('pointerdown', (event) => {
-          event.preventDefault();
-          startAxisMove(j, direction, button);
-        });
-        button.addEventListener('pointerup', () => stopAxisMove(j.name));
-        button.addEventListener('pointercancel', () => stopAxisMove(j.name));
-        button.addEventListener('keydown', (event) => {
-          if (event.key === ' ' || event.key === 'Enter') {
-            event.preventDefault();
-            startAxisMove(j, direction, button);
-          }
-        });
-        button.addEventListener('keyup', (event) => {
-          if (event.key === ' ' || event.key === 'Enter') {
-            event.preventDefault();
-            stopAxisMove(j.name);
-          }
-        });
+        bindHoldButton(
+          button,
+          () => startAxisMove(j, direction, button),
+          () => stopAxisMove(j.name)
+        );
       });
     }
+  }
+
+  function buildCartesianControls() {
+    const container = document.getElementById('cartesian-controls');
+    if (!container) {
+      console.warn('Cartesian control container is missing');
+      return;
+    }
+    container.innerHTML = '';
+    for (const axis of CARTESIAN_AXES) {
+      const row = document.createElement('div');
+      row.className = 'cartesian-row';
+      row.innerHTML = `
+        <button class="axis-button" type="button" data-direction="-1"
+                aria-label="Decrease TCP ${axis.label}">-</button>
+        <div class="cartesian-reading">
+          <span class="cartesian-label">${axis.label}</span>
+          <span class="cartesian-value" id="cartesian-value-${axis.name}">—</span>
+          <span class="cartesian-step">1 cm / step</span>
+        </div>
+        <button class="axis-button" type="button" data-direction="1"
+                aria-label="Increase TCP ${axis.label}">+</button>
+      `;
+      container.appendChild(row);
+
+      row.querySelectorAll('.axis-button').forEach((button) => {
+        const direction = Number(button.dataset.direction);
+        bindHoldButton(
+          button,
+          () => startCartesianMove(axis, direction, button),
+          () => stopCartesianMove(axis.name)
+        );
+      });
+    }
+  }
+
+  function bindHoldButton(button, onStart, onStop) {
+    button.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      onStart();
+    });
+    button.addEventListener('pointerup', onStop);
+    button.addEventListener('pointercancel', onStop);
+    button.addEventListener('keydown', (event) => {
+      if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        onStart();
+      }
+    });
+    button.addEventListener('keyup', (event) => {
+      if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        onStop();
+      }
+    });
   }
 
   function bindButtons() {
@@ -96,9 +150,9 @@ const ControlPage = (() => {
       gripperTarget = parseFloat(gs.value);
     });
 
-    window.addEventListener('pointerup', stopAllAxisMoves);
-    window.addEventListener('pointercancel', stopAllAxisMoves);
-    window.addEventListener('blur', stopAllAxisMoves);
+    window.addEventListener('pointerup', stopAllMoves);
+    window.addEventListener('pointercancel', stopAllMoves);
+    window.addEventListener('blur', stopAllMoves);
   }
 
   function startAxisMove(joint, direction, button) {
@@ -127,6 +181,67 @@ const ControlPage = (() => {
 
   function stopAllAxisMoves() {
     for (const name of axisMoves.keys()) stopAxisMove(name);
+  }
+
+  function startCartesianMove(axis, direction, button) {
+    if (cartesianMoves.has(axis.name)) return;
+    const move = { axis, direction, button, pressed: true, inFlight: false };
+    cartesianMoves.set(axis.name, move);
+    button.classList.add('active');
+    showFeedback('running', `Moving TCP ${axis.label} ${direction > 0 ? '+' : '-'}`);
+    sendNextCartesianStep(move);
+  }
+
+  function stopCartesianMove(axisName) {
+    const move = cartesianMoves.get(axisName);
+    if (!move) return;
+    move.pressed = false;
+    move.button.classList.remove('active');
+    cartesianMoves.delete(axisName);
+  }
+
+  function stopAllCartesianMoves() {
+    for (const name of cartesianMoves.keys()) stopCartesianMove(name);
+  }
+
+  function stopAllMoves() {
+    stopAllAxisMoves();
+    stopAllCartesianMoves();
+  }
+
+  function sendNextCartesianStep(move) {
+    if (!move.pressed || move.inFlight) return;
+
+    const translation = { x: 0, y: 0, z: 0 };
+    translation[move.axis.name] = move.direction * CARTESIAN_STEP_M;
+    move.inFlight = true;
+    ROSConn.sendActionGoal(
+      'skills/move_relative',
+      'nlra_interfaces/action/MoveRelative',
+      {
+        translation,
+        // A zero quaternion is the action's "no rotation" value.
+        rotation_delta: { x: 0, y: 0, z: 0, w: 0 },
+        reference_frame: CARTESIAN_REFERENCE_FRAME,
+        velocity_scaling: CARTESIAN_VELOCITY_SCALING,
+        acceleration_scaling: CARTESIAN_VELOCITY_SCALING,
+      }
+    ).then((res) => {
+      move.inFlight = false;
+      const r = res.result || res;
+      if (!r.success) {
+        stopCartesianMove(move.axis.name);
+        showFeedback('error', `Failed to move TCP ${move.axis.label}: ${r.message}`);
+        return;
+      }
+      if (move.pressed) {
+        setTimeout(() => sendNextCartesianStep(move), CARTESIAN_REPEAT_DELAY_MS);
+      }
+    }).catch((err) => {
+      move.inFlight = false;
+      stopCartesianMove(move.axis.name);
+      showFeedback('error', `Cartesian action error: ${err}`);
+    });
   }
 
   function sendNextAxisStep(move) {
@@ -300,6 +415,7 @@ const ControlPage = (() => {
       // scene (a +90 deg X rotation would map the arm's +Z to -Y).
       robotModel.rotation.x = -Math.PI / 2;
       applyJointAngles();
+      updateCartesianPosition();
     };
 
     let loader;
@@ -439,6 +555,22 @@ const ControlPage = (() => {
     } else {
       applyJointAngles();
     }
+    updateCartesianPosition();
+  }
+
+  function updateCartesianPosition() {
+    if (!robotModel || robotModel._fallback || !robotModel.links ||
+        !robotModel.links.tool0) return;
+
+    const position = new THREE.Vector3();
+    robotModel.updateMatrixWorld(true);
+    robotModel.links.tool0.getWorldPosition(position);
+    // The URDF model is rotated from Z-up into Three.js Y-up at the root.
+    const coordinates = { x: position.x, y: -position.z, z: position.y };
+    for (const axis of CARTESIAN_AXES) {
+      const value = document.getElementById(`cartesian-value-${axis.name}`);
+      if (value) value.textContent = `${coordinates[axis.name].toFixed(3)} m`;
+    }
   }
 
   function applyJointAngles() {
@@ -538,7 +670,7 @@ const ControlPage = (() => {
   }
 
   function onDeactivate() {
-    stopAllAxisMoves();
+    stopAllMoves();
   }
 
   return { init, onActivate, onDeactivate };
