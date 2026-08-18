@@ -186,7 +186,7 @@ const ControlPage = (() => {
     scene.background = new THREE.Color(0x1a1d27);
 
     camera = new THREE.PerspectiveCamera(50, w / h, 0.01, 10);
-    camera.position.set(0.6, -0.8, 0.6);
+    camera.position.set(1.7891967177342514, 1.003632497242595, -0.4837088630458563);
 
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(w, h);
@@ -194,7 +194,7 @@ const ControlPage = (() => {
     container.appendChild(renderer.domElement);
 
     controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, 0, 0.3);
+    controls.target.set(-0.2452312924615365, 0.6090540484045234, 0.1862775545761634);
     controls.update();
 
     // Lights
@@ -408,6 +408,14 @@ const ControlPage = (() => {
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
   }
+
+  window.getRobotCameraPose = function () {
+    if (!camera || !controls) return null;
+    return {
+      position: camera.position.toArray(),
+      target: controls.target.toArray(),
+    };
+  };
 
   // ── Joint state subscription (updates sliders from live state) ──
   function startJointStateSubscription() {
