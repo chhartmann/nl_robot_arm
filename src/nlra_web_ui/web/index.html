@@ -11,7 +11,6 @@
     <h1>NL Robot Arm</h1>
     <nav id="nav">
       <button class="tab active" data-page="control">Manual Control</button>
-      <button class="tab" data-page="chat">NL Chat</button>
       <button class="tab" data-page="diagnostics">Diagnostics</button>
     </nav>
     <div id="conn-status" class="disconnected">
@@ -26,8 +25,8 @@
       <div class="control-layout">
         <div class="joints-panel">
           <h2>Joint Control</h2>
-          <div id="joint-sliders"></div>
-          <button id="btn-set-joints" class="primary">Set Joints</button>
+          <p class="control-hint">Hold + or - to move an axis. Release to stop sending commands.</p>
+          <div id="joint-controls"></div>
           <button id="btn-home">Home</button>
         </div>
         <div class="gripper-panel">
@@ -44,22 +43,21 @@
           <h2>3D View</h2>
           <div id="robot-viz"></div>
         </div>
+        <div class="chat-panel">
+          <h2>Natural Language</h2>
+          <div class="chat-layout">
+            <div id="chat-log" class="chat-log">
+              <div class="chat-hint">Ask the robot — e.g. "put the red cube into the blue tray"</div>
+            </div>
+            <div id="chat-progress" class="chat-progress hidden"></div>
+            <div class="chat-input-row">
+              <input type="text" id="chat-input" placeholder="Type a command and press Enter…">
+              <button id="btn-chat-send" class="primary">Send</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div id="control-feedback" class="feedback-bar hidden"></div>
-    </section>
-
-    <!-- NL Chat Page -->
-    <section id="page-chat" class="page">
-      <div class="chat-layout">
-        <div id="chat-log" class="chat-log">
-          <div class="chat-hint">Ask the robot — e.g. "put the red cube into the blue tray"</div>
-        </div>
-        <div id="chat-progress" class="chat-progress hidden"></div>
-        <div class="chat-input-row">
-          <input type="text" id="chat-input" placeholder="Type a command and press Enter…">
-          <button id="btn-chat-send" class="primary">Send</button>
-        </div>
-      </div>
     </section>
 
     <!-- Diagnostics Page -->

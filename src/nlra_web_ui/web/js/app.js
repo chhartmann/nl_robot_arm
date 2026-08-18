@@ -2,13 +2,35 @@
 (function() {
   const pages = {
     control: ControlPage,
-    chat: ChatPage,
     diagnostics: DiagnosticsPage,
   };
 
   let activePage = 'control';
 
+  function normalizeChatLayout() {
+    // Migrate a page cached from the previous release in place. This prevents
+    // a stale index.html from bringing back a separate chat tab after the JS
+    // bundle has already been updated.
+    document.querySelector('.tab[data-page="chat"]')?.remove();
+    const legacyPage = document.getElementById('page-chat');
+    if (!legacyPage) return;
+
+    const layout = legacyPage.querySelector('.chat-layout');
+    const controlLayout = document.querySelector('#page-control .control-layout');
+    if (!layout || !controlLayout) return;
+
+    const panel = document.createElement('div');
+    panel.className = 'chat-panel';
+    const heading = document.createElement('h2');
+    heading.textContent = 'Natural Language';
+    panel.append(heading, layout);
+    controlLayout.appendChild(panel);
+    legacyPage.remove();
+  }
+
   function init() {
+    normalizeChatLayout();
+
     // Tab switching
     document.querySelectorAll('.tab').forEach((tab) => {
       tab.addEventListener('click', () => switchPage(tab.dataset.page));
@@ -20,7 +42,7 @@
 
     // Initialize all pages (isolate failures so one broken page can't take
     // down the others)
-    for (const page of Object.values(pages)) {
+    for (const page of [ChatPage, ...Object.values(pages)]) {
       try {
         page.init();
       } catch (e) {

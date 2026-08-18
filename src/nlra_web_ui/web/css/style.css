@@ -111,29 +111,58 @@ button.primary:hover { background: var(--accent); }
 /* ── Manual Control ── */
 .control-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(220px, 0.8fr) minmax(360px, 1.4fr);
   gap: 1rem;
 }
 
-.joints-panel, .gripper-panel, .viz-panel {
+.joints-panel, .gripper-panel, .viz-panel, .chat-panel {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem;
 }
 
-#joint-sliders { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1rem; }
+#joint-controls { display: flex; flex-direction: column; gap: 0.65rem; margin-bottom: 1rem; }
+
+.control-hint {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  margin-bottom: 0.75rem;
+}
 
 .joint-row {
   display: grid;
-  grid-template-columns: 4rem 1fr 3.5rem;
+  grid-template-columns: 2.5rem 1fr 2.5rem;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
-.joint-row label { font-size: 0.8rem; font-weight: 600; }
-.joint-row input[type="range"] { width: 100%; accent-color: var(--accent); }
-.joint-row .joint-val { font-size: 0.8rem; color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
+.axis-button {
+  width: auto;
+  margin-top: 0;
+  padding: 0.25rem;
+  min-width: 2.5rem;
+  min-height: 2.2rem;
+  font-size: 1.25rem;
+  line-height: 1;
+  touch-action: none;
+  user-select: none;
+}
+
+.axis-button.active,
+.axis-button:active { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+
+.joint-reading {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  align-items: baseline;
+  column-gap: 0.35rem;
+}
+
+.axis-label { font-size: 0.8rem; font-weight: 600; }
+.joint-row .joint-val { font-size: 0.8rem; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+.joint-range { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.65rem; text-align: right; }
 
 .gripper-control {
   margin-bottom: 1rem;
@@ -151,7 +180,7 @@ button.primary:hover { background: var(--accent); }
   overflow: hidden;
 }
 
-.joints-panel button, .gripper-panel button { width: 100%; margin-top: 0.5rem; }
+.joints-panel > button, .gripper-panel button { width: 100%; margin-top: 0.5rem; }
 
 .feedback-bar {
   margin-top: 0.75rem;
@@ -171,9 +200,10 @@ button.primary:hover { background: var(--accent); }
 .chat-layout {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 8rem);
-  max-width: 800px;
+  height: 400px;
 }
+
+.chat-panel { grid-column: 1 / -1; }
 
 .chat-log {
   flex: 1;

@@ -90,6 +90,13 @@ class WebConfigServer(Node):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, directory=web_dir, **kwargs)
 
+            def end_headers(self):
+                # The UI is served from a local development/simulation node;
+                # stale cached bundles otherwise survive a rebuild and can
+                # mix old markup with new JavaScript.
+                self.send_header("Cache-Control", "no-store")
+                super().end_headers()
+
             def do_GET(self):
                 if self.path == "/api/config":
                     rb_port = node.get_parameter("rosbridge_port").value

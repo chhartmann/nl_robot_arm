@@ -10,11 +10,14 @@ const ControlPage = (() => {
   ];
 
   const GRIPPER = { name: 'robotiq_85_left_knuckle_joint', min: 0, max: 0.8 };
+  const AXIS_STEP_DEG = 5;
+  const AXIS_REPEAT_DELAY_MS = 80;
+  const AXIS_MOVE_DURATION_SEC = 0.5;
 
-  let sliders = {};
-  let sliderValues = {};
-  let touched = {};
-  let gripperTouched = false;
+  let jointValues = {};
+  let gripperValue = 0;
+  let gripperTarget = 0;
+  const axisMoves = new Map();
   let robotModel = null;
   let robotScene = null;
   let robotLoadGeneration = 0;
@@ -22,7 +25,7 @@ const ControlPage = (() => {
   let jointStateSub = null;
 
   function init() {
-    buildSliders();
+    buildAxisControls();
     bindButtons();
     try {
       initThreeJS();
@@ -31,34 +34,57 @@ const ControlPage = (() => {
     }
   }
 
-  function buildSliders() {
-    const container = document.getElementById('joint-sliders');
+  function buildAxisControls() {
+    const container = document.getElementById('joint-controls');
+    // Keep the 3D view usable during a rolling update where an old index.html
+    // is briefly paired with the new JavaScript bundle.
+    if (!container) {
+      console.warn('joint control container is missing');
+      return;
+    }
     container.innerHTML = '';
     for (const j of JOINTS) {
       const row = document.createElement('div');
       row.className = 'joint-row';
       row.innerHTML = `
-        <label>${j.label}</label>
-        <input type="range" min="${j.min}" max="${j.max}" step="0.5" value="${j.home}"
-               data-joint="${j.name}" data-alias="${j.alias}">
-        <span class="joint-val" id="jv-${j.name}">${j.home.toFixed(1)}°</span>
+        <button class="axis-button" type="button" data-direction="-1"
+                aria-label="Decrease ${j.label}">−</button>
+        <div class="joint-reading">
+          <span class="axis-label">${j.label}</span>
+          <span class="joint-val" id="jv-${j.name}">${j.home.toFixed(1)}°</span>
+          <span class="joint-range">${j.min}° to ${j.max}°</span>
+        </div>
+        <button class="axis-button" type="button" data-direction="1"
+                aria-label="Increase ${j.label}">+</button>
       `;
       container.appendChild(row);
-      const slider = row.querySelector('input');
-      slider.addEventListener('input', () => {
-        const deg = parseFloat(slider.value);
-        document.getElementById(`jv-${j.name}`).textContent = deg.toFixed(1) + '°';
-        sliderValues[j.name] = deg;
-        touched[j.name] = true;
-        updateRobotModel();
+      jointValues[j.name] = j.home;
+
+      row.querySelectorAll('.axis-button').forEach((button) => {
+        const direction = Number(button.dataset.direction);
+        button.addEventListener('pointerdown', (event) => {
+          event.preventDefault();
+          startAxisMove(j, direction, button);
+        });
+        button.addEventListener('pointerup', () => stopAxisMove(j.name));
+        button.addEventListener('pointercancel', () => stopAxisMove(j.name));
+        button.addEventListener('keydown', (event) => {
+          if (event.key === ' ' || event.key === 'Enter') {
+            event.preventDefault();
+            startAxisMove(j, direction, button);
+          }
+        });
+        button.addEventListener('keyup', (event) => {
+          if (event.key === ' ' || event.key === 'Enter') {
+            event.preventDefault();
+            stopAxisMove(j.name);
+          }
+        });
       });
-      sliders[j.name] = slider;
-      sliderValues[j.name] = j.home;
     }
   }
 
   function bindButtons() {
-    document.getElementById('btn-set-joints').addEventListener('click', sendJoints);
     document.getElementById('btn-home').addEventListener('click', sendHome);
     document.getElementById('btn-grasp').addEventListener('click', sendGrasp);
     document.getElementById('btn-release').addEventListener('click', sendRelease);
@@ -67,34 +93,81 @@ const ControlPage = (() => {
     gs.addEventListener('input', () => {
       document.getElementById('gripper-value').textContent =
         parseFloat(gs.value).toFixed(2) + ' rad';
-      gripperTouched = true;
-      updateRobotModel();
+      gripperTarget = parseFloat(gs.value);
     });
+
+    window.addEventListener('pointerup', stopAllAxisMoves);
+    window.addEventListener('pointercancel', stopAllAxisMoves);
+    window.addEventListener('blur', stopAllAxisMoves);
   }
 
-  function sendJoints() {
-    const joints = {};
-    for (const j of JOINTS) {
-      joints[j.alias] = sliderValues[j.name];
-    }
-    showFeedback('running', `Setting joints: ${JSON.stringify(joints)}`);
+  function startAxisMove(joint, direction, button) {
+    if (axisMoves.has(joint.name)) return;
+    const move = {
+      joint,
+      direction,
+      button,
+      pressed: true,
+      inFlight: false,
+      targetDegrees: { ...jointValues },
+    };
+    axisMoves.set(joint.name, move);
+    button.classList.add('active');
+    showFeedback('running', `Moving ${joint.label} ${direction > 0 ? '+' : '-'}`);
+    sendNextAxisStep(move);
+  }
 
+  function stopAxisMove(jointName) {
+    const move = axisMoves.get(jointName);
+    if (!move) return;
+    move.pressed = false;
+    move.button.classList.remove('active');
+    axisMoves.delete(jointName);
+  }
+
+  function stopAllAxisMoves() {
+    for (const name of axisMoves.keys()) stopAxisMove(name);
+  }
+
+  function sendNextAxisStep(move) {
+    if (!move.pressed || move.inFlight) return;
+
+    const current = move.targetDegrees[move.joint.name];
+    const remaining = move.direction < 0
+      ? current - move.joint.min
+      : move.joint.max - current;
+    if (remaining <= 0) {
+      stopAxisMove(move.joint.name);
+      showFeedback('error', `${move.joint.label} is at its limit`);
+      return;
+    }
+    const stepDeg = Math.min(AXIS_STEP_DEG, remaining);
+    const nextTarget = {
+      ...move.targetDegrees,
+      [move.joint.name]: current + move.direction * stepDeg,
+    };
+
+    move.inFlight = true;
     ROSConn.sendActionGoal(
       'skills/move_joints',
       'nlra_interfaces/action/MoveJoints',
-      { positions: JOINTS.map(j => sliderValues[j.name] * Math.PI / 180), duration: 5.0 },
-      (fb) => {
-        if (fb.phase) showFeedback('running', `MoveJoints: ${fb.phase}`);
+      {
+        positions: JOINTS.map(j => nextTarget[j.name] * Math.PI / 180),
+        duration: AXIS_MOVE_DURATION_SEC,
       }
     ).then((res) => {
+      move.inFlight = false;
       const r = res.result || res;
-      if (r.success) {
-        touched = {};
-        gripperTouched = false;
+      if (!r.success) {
+        stopAxisMove(move.joint.name);
+        showFeedback('error', `Failed to move ${move.joint.label}: ${r.message}`);
+        return;
       }
-      showFeedback(r.success ? 'success' : 'error',
-        r.success ? 'Joints set successfully' : `Failed: ${r.message}`);
+      move.targetDegrees = nextTarget;
+      if (move.pressed) setTimeout(() => sendNextAxisStep(move), AXIS_REPEAT_DELAY_MS);
     }).catch((err) => {
+      move.inFlight = false;
+      stopAxisMove(move.joint.name);
       showFeedback('error', `Action error: ${err}`);
     });
   }
@@ -112,12 +185,11 @@ const ControlPage = (() => {
       const r = res.result || res;
       showFeedback(r.success ? 'success' : 'error',
         r.success ? 'At home' : `Failed: ${r.message}`);
-      if (r.success) setSliderFromHome();
     }).catch((err) => showFeedback('error', `Home error: ${err}`));
   }
 
   function sendGrasp() {
-    const pos = parseFloat(document.getElementById('gripper-slider').value);
+    const pos = gripperTarget;
     showFeedback('running', `Grasping at ${pos.toFixed(2)} rad...`);
     ROSConn.sendActionGoal(
       'skills/grasp',
@@ -128,7 +200,6 @@ const ControlPage = (() => {
       }
     ).then((res) => {
       const r = res.result || res;
-      if (r.success) gripperTouched = false;
       showFeedback(r.success ? 'success' : 'error',
         r.object_detected ? 'Object gripped' : (r.message || 'Grasp done'));
     }).catch((err) => showFeedback('error', `Grasp error: ${err}`));
@@ -145,23 +216,9 @@ const ControlPage = (() => {
       }
     ).then((res) => {
       const r = res.result || res;
-      if (r.success) gripperTouched = false;
       showFeedback(r.success ? 'success' : 'error',
         r.success ? 'Gripper open' : `Failed: ${r.message}`);
     }).catch((err) => showFeedback('error', `Release error: ${err}`));
-  }
-
-  function setSliderFromHome() {
-    for (const j of JOINTS) {
-      sliders[j.name].value = j.home;
-      sliderValues[j.name] = j.home;
-      document.getElementById(`jv-${j.name}`).textContent = j.home.toFixed(1) + '°';
-    }
-    document.getElementById('gripper-slider').value = 0;
-    document.getElementById('gripper-value').textContent = '0.00 rad';
-    touched = {};
-    gripperTouched = false;
-    updateRobotModel();
   }
 
   function showFeedback(type, msg) {
@@ -214,7 +271,10 @@ const ControlPage = (() => {
     robotScene.name = 'robot-visualization';
     scene.add(robotScene);
 
-    // Load URDF
+    // Show a model immediately. The real URDF and meshes load asynchronously;
+    // leaving the group empty makes a slow or failed mesh request look like a
+    // broken 3D view.
+    buildFallbackRobot(robotLoadGeneration);
     loadURDF();
 
     window.addEventListener('resize', onResize);
@@ -223,6 +283,24 @@ const ControlPage = (() => {
 
   function loadURDF() {
     const generation = ++robotLoadGeneration;
+    let pendingMeshes = 0;
+    let meshFailures = 0;
+    let parsedRobot = null;
+    let parsed = false;
+
+    const installParsedRobot = () => {
+      if (!parsed || pendingMeshes !== 0 || generation !== robotLoadGeneration) return;
+      if (meshFailures > 0) {
+        console.warn(`URDF mesh loading failed for ${meshFailures} mesh(es)`);
+        buildFallbackRobot(generation);
+        return;
+      }
+      replaceRobotModel(parsedRobot);
+      // URDF frames are Z-up; stand the model upright in three.js's Y-up
+      // scene (a +90 deg X rotation would map the arm's +Z to -Y).
+      robotModel.rotation.x = -Math.PI / 2;
+      applyJointAngles();
+    };
 
     let loader;
     try {
@@ -245,19 +323,35 @@ const ControlPage = (() => {
     // Collada assets. The URDF joint frames are already Z_UP; without undoing
     // that rotation every mesh would be tilted 90 degrees off its joint axis.
     loader.loadMeshCb = (path, manager, done) => {
+      pendingMeshes++;
+      const finish = (error) => {
+        if (error) meshFailures++;
+        pendingMeshes--;
+        installParsedRobot();
+      };
       if (/\.dae$/i.test(path)) {
         const loader3 = new THREE.ColladaLoader(manager);
         loader3.load(path, (dae) => {
           dae.scene.quaternion.identity();
           done(dae.scene);
-        }, undefined, (err) => done(null, err));
+          finish();
+        }, undefined, (err) => {
+          done(null, err);
+          finish(err);
+        });
       } else if (/\.stl$/i.test(path)) {
         const stlLoader = new THREE.STLLoader(manager);
         stlLoader.load(path, (geometry) => {
           done(new THREE.Mesh(geometry, new THREE.MeshPhongMaterial()));
-        }, undefined, (err) => done(null, err));
+          finish();
+        }, undefined, (err) => {
+          done(null, err);
+          finish(err);
+        });
       } else {
-        done(null, new Error('No loader for ' + path));
+        const error = new Error('No loader for ' + path);
+        done(null, error);
+        finish(error);
       }
     };
 
@@ -267,11 +361,9 @@ const ControlPage = (() => {
       '/models/agilus_robotiq.urdf',
       (robot) => {
         if (generation !== robotLoadGeneration) return;
-        replaceRobotModel(robot);
-        // URDF frames are Z-up; stand the model upright in three.js's Y-up
-        // scene (a +90 deg X rotation would map the arm's +Z to -Y).
-        robotModel.rotation.x = -Math.PI / 2;
-        applyJointAngles();
+        parsedRobot = robot;
+        parsed = true;
+        installParsedRobot();
       },
       (err) => {
         if (generation !== robotLoadGeneration) return;
@@ -352,7 +444,7 @@ const ControlPage = (() => {
   function applyJointAngles() {
     if (!robotModel || !robotModel.links) return;
     for (const j of JOINTS) {
-      const deg = sliderValues[j.name];
+      const deg = jointValues[j.name];
       const rad = deg * Math.PI / 180;
       if (robotModel.joints && robotModel.joints[j.name]) {
         robotModel.joints[j.name].setJointValue(rad);
@@ -360,13 +452,13 @@ const ControlPage = (() => {
     }
     const g = robotModel.joints && robotModel.joints[GRIPPER.name];
     if (g) {
-      g.setJointValue(parseFloat(document.getElementById('gripper-slider').value));
+      g.setJointValue(gripperValue);
     }
   }
 
   function updateFallbackRobot() {
     if (!robotModel || !robotModel.joints) return;
-    const angles = JOINTS.map(j => sliderValues[j.name] * Math.PI / 180);
+    const angles = JOINTS.map(j => jointValues[j.name] * Math.PI / 180);
 
     // Simple kinematic chain: each joint rotates around Z axis
     for (let i = 0; i < robotModel.joints.length; i++) {
@@ -386,8 +478,7 @@ const ControlPage = (() => {
     }
 
     // Gripper open/close
-    const gripperVal = parseFloat(document.getElementById('gripper-slider').value);
-    const gap = 0.012 + gripperVal * 0.015;
+    const gap = 0.012 + gripperValue * 0.015;
     if (robotModel.finger1) robotModel.finger1.position.x = gap;
     if (robotModel.finger2) robotModel.finger2.position.x = -gap;
   }
@@ -417,7 +508,7 @@ const ControlPage = (() => {
     };
   };
 
-  // ── Joint state subscription (updates sliders from live state) ──
+  // ── Joint state subscription (the live robot state drives the controls and model) ──
   function startJointStateSubscription() {
     if (jointStateSub) return;
     jointStateSub = ROSConn.subscribe(
@@ -426,16 +517,13 @@ const ControlPage = (() => {
         for (let i = 0; i < msg.name.length; i++) {
           const name = msg.name[i];
           const j = JOINTS.find(j => j.name === name);
-          if (j && !touched[name]) {
+          if (j) {
             const deg = msg.position[i] * 180 / Math.PI;
-            sliders[name].value = deg;
-            sliderValues[name] = deg;
+            jointValues[name] = deg;
             document.getElementById(`jv-${name}`).textContent = deg.toFixed(1) + '°';
           }
-          if (name === GRIPPER.name && !gripperTouched) {
-            document.getElementById('gripper-slider').value = msg.position[i];
-            document.getElementById('gripper-value').textContent =
-              msg.position[i].toFixed(2) + ' rad';
+          if (name === GRIPPER.name) {
+            gripperValue = msg.position[i];
           }
         }
         updateRobotModel();
@@ -449,5 +537,9 @@ const ControlPage = (() => {
     onResize();
   }
 
-  return { init, onActivate };
+  function onDeactivate() {
+    stopAllAxisMoves();
+  }
+
+  return { init, onActivate, onDeactivate };
 })();
