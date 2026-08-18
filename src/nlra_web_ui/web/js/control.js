@@ -16,6 +16,8 @@ const ControlPage = (() => {
   let touched = {};
   let gripperTouched = false;
   let robotModel = null;
+  let robotScene = null;
+  let robotLoadGeneration = 0;
   let scene, camera, renderer, controls;
   let jointStateSub = null;
 
@@ -174,6 +176,8 @@ const ControlPage = (() => {
 
   // ── Three.js 3D visualization ──
   function initThreeJS() {
+    if (scene) return;
+
     const container = document.getElementById('robot-viz');
     const w = container.clientWidth || 600;
     const h = container.clientHeight || 400;
@@ -205,6 +209,11 @@ const ControlPage = (() => {
     const axes = new THREE.AxesHelper(0.2);
     scene.add(axes);
 
+    // Keep the real and fallback models in one replaceable container.
+    robotScene = new THREE.Group();
+    robotScene.name = 'robot-visualization';
+    scene.add(robotScene);
+
     // Load URDF
     loadURDF();
 
@@ -213,12 +222,14 @@ const ControlPage = (() => {
   }
 
   function loadURDF() {
+    const generation = ++robotLoadGeneration;
+
     let loader;
     try {
       loader = new URDFLoader();
     } catch (e) {
       console.warn('URDFLoader unavailable, using fallback visualization:', e);
-      buildFallbackRobot();
+      buildFallbackRobot(generation);
       return;
     }
 
@@ -255,21 +266,31 @@ const ControlPage = (() => {
     loader.load(
       '/models/agilus_robotiq.urdf',
       (robot) => {
-        robotModel = robot;
+        if (generation !== robotLoadGeneration) return;
+        replaceRobotModel(robot);
         // URDF frames are Z-up; stand the model upright in three.js's Y-up
         // scene (a +90 deg X rotation would map the arm's +Z to -Y).
         robotModel.rotation.x = -Math.PI / 2;
-        scene.add(robotModel);
         applyJointAngles();
       },
       (err) => {
+        if (generation !== robotLoadGeneration) return;
         console.warn('URDF load failed, using fallback visualization:', err);
-        buildFallbackRobot();
+        buildFallbackRobot(generation);
       }
     );
   }
 
-  function buildFallbackRobot() {
+  function replaceRobotModel(model) {
+    if (!robotScene) return;
+    robotScene.clear();
+    robotModel = model;
+    robotScene.add(model);
+  }
+
+  function buildFallbackRobot(generation) {
+    if (generation !== robotLoadGeneration || !robotScene) return;
+
     const group = new THREE.Group();
 
     // Base
@@ -315,7 +336,7 @@ const ControlPage = (() => {
     gripGroup.add(finger1, finger2);
     group.add(gripGroup);
 
-    scene.add(group);
+    replaceRobotModel(group);
     robotModel = { _fallback: true, joints, gripGroup, finger1, finger2 };
   }
 
