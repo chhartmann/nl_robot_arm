@@ -23,6 +23,15 @@ const ControlPage = (() => {
     { name: 'y', label: 'Y' },
     { name: 'z', label: 'Z' },
   ];
+  const WORLD_OBJECTS_POLL_MS = 500;
+  // Fill colors for the ghost objects, matched against the object id.
+  const OBJECT_COLORS = {
+    red: 0xff4444,
+    green: 0x44cc66,
+    yellow: 0xffcc33,
+    orange: 0xff8833,
+    blue: 0x4488ff,
+  };
 
   let jointValues = {};
   let gripperValue = 0;
@@ -34,6 +43,10 @@ const ControlPage = (() => {
   let robotLoadGeneration = 0;
   let scene, camera, renderer, controls;
   let jointStateSub = null;
+  let worldObjectsGroup = null;
+  const objectMeshes = {};
+  let worldObjectsPollTimer = null;
+  let getObjectsService = null;
 
   function init() {
     buildAxisControls();
@@ -386,6 +399,15 @@ const ControlPage = (() => {
     robotScene.name = 'robot-visualization';
     scene.add(robotScene);
 
+    // Ghost overlay for world-model objects. Kept out of robotScene, which is
+    // cleared whenever the robot model reloads. The group carries the same
+    // Z-up -> Y-up rotation as the robot model, so ROS world-frame poses can
+    // be applied to its children verbatim.
+    worldObjectsGroup = new THREE.Group();
+    worldObjectsGroup.name = 'world-objects';
+    worldObjectsGroup.rotation.x = -Math.PI / 2;
+    scene.add(worldObjectsGroup);
+
     // Show a model immediately. The real URDF and meshes load asynchronously;
     // leaving the group empty makes a slow or failed mesh request look like a
     // broken 3D view.
@@ -664,8 +686,99 @@ const ControlPage = (() => {
     );
   }
 
+  // ── World-model object overlay (ghost meshes from ground-truth poses) ──
+  function colorForObject(id) {
+    for (const name of Object.keys(OBJECT_COLORS)) {
+      if (id.includes(name)) return OBJECT_COLORS[name];
+    }
+    return 0x999999;
+  }
+
+  function buildObjectGeometry(obj) {
+    const sx = obj.size[0];
+    const sy = obj.size[1];
+    const sz = obj.size[2];
+    if (obj.kind === 'cylinder') {
+      // CylinderGeometry is Y-axis aligned; rotate it onto the local (ROS)
+      // Z axis so the group rotation stands it upright in the scene.
+      const geo = new THREE.CylinderGeometry(sx / 2, sx / 2, sz, 24);
+      geo.rotateX(Math.PI / 2);
+      return geo;
+    }
+    return new THREE.BoxGeometry(sx, sy, sz);
+  }
+
+  function buildObjectMesh(obj) {
+    const geometry = buildObjectGeometry(obj);
+    const color = colorForObject(obj.id);
+    const group = new THREE.Group();
+    group.name = `world-object-${obj.id}`;
+    if (obj.graspable) {
+      group.add(new THREE.Mesh(geometry, new THREE.MeshPhongMaterial({
+        color, transparent: true, opacity: 0.35,
+      })));
+    }
+    // Wireframe edges for all objects (the only representation for static,
+    // non-graspable ones like the table and tray, so they don't occlude).
+    group.add(new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry),
+      new THREE.LineBasicMaterial({ color })
+    ));
+    return group;
+  }
+
+  function disposeObjectMesh(group) {
+    group.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+
+  function updateWorldObjects(objects) {
+    if (!worldObjectsGroup) return;
+    const seen = new Set();
+    for (const obj of objects) {
+      if (!obj.pose || !obj.pose.pose || !obj.size) continue;
+      seen.add(obj.id);
+      let entry = objectMeshes[obj.id];
+      if (!entry) {
+        entry = buildObjectMesh(obj);
+        objectMeshes[obj.id] = entry;
+        worldObjectsGroup.add(entry);
+      }
+      const p = obj.pose.pose.position;
+      const q = obj.pose.pose.orientation;
+      entry.position.set(p.x, p.y, p.z);
+      entry.quaternion.set(q.x, q.y, q.z, q.w);
+    }
+    for (const id of Object.keys(objectMeshes)) {
+      if (!seen.has(id)) {
+        worldObjectsGroup.remove(objectMeshes[id]);
+        disposeObjectMesh(objectMeshes[id]);
+        delete objectMeshes[id];
+      }
+    }
+  }
+
+  function startWorldObjectsPolling() {
+    if (worldObjectsPollTimer) return;
+    if (!getObjectsService) {
+      getObjectsService = ROSConn.makeServiceCaller(
+        '/world_model/get_objects', 'nlra_interfaces/srv/GetObjects'
+      );
+    }
+    const poll = () => {
+      getObjectsService({ kind_filter: '' })
+        .then((resp) => updateWorldObjects(resp.objects || []))
+        .catch(() => {});  // world model not up yet; try again next tick
+    };
+    poll();
+    worldObjectsPollTimer = setInterval(poll, WORLD_OBJECTS_POLL_MS);
+  }
+
   function onActivate() {
     startJointStateSubscription();
+    startWorldObjectsPolling();
     onResize();
   }
 
