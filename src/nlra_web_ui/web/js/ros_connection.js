@@ -13,6 +13,18 @@ const ROSConn = (() => {
     return ros;
   }
 
+  // roslibjs buffers every op sent while disconnected and replays them all on
+  // reconnect. Subscriptions must keep buffering so they come back after the
+  // socket reopens, but service/action ops must NOT: they are stale by then
+  // (e.g. minutes of world-model polls) and flushing the whole batch at once
+  // stalls rosbridge - each call does a blocking DDS graph query - past its
+  // 5 s per-call timeout, producing the "Timeout exceeded while waiting for
+  // service response" flood. So service/action helpers reject immediately
+  // instead of letting the op sit in roslibjs's buffer.
+  function isReady() {
+    return connected && ros && ros.isConnected;
+  }
+
   function bindHandlers() {
     if (handlersBound) return;
     handlersBound = true;
@@ -72,6 +84,7 @@ const ROSConn = (() => {
     callService(name, type, request) {
       const r = ensureRos();
       return new Promise((resolve, reject) => {
+        if (!isReady()) { reject(new Error('ROS not connected')); return; }
         const svc = new ROSLIB.Service({ ros: r, name, serviceType: type });
         const req = new ROSLIB.ServiceRequest(request);
         svc.callService(req, resolve, reject);
@@ -96,6 +109,7 @@ const ROSConn = (() => {
       let cancelled = false;
 
       const promise = new Promise((resolve, reject) => {
+        if (!isReady()) { reject(new Error('ROS not connected')); return; }
         const handler = (event) => {
           let message;
           try {
@@ -182,9 +196,12 @@ const ROSConn = (() => {
     makeServiceCaller(name, type) {
       const r = ensureRos();
       return (request) => {
-        const svc = new ROSLIB.Service({ ros: r, name, serviceType: type });
-        const req = new ROSLIB.ServiceRequest(request);
-        return new Promise((resolve, reject) => svc.callService(req, resolve, reject));
+        return new Promise((resolve, reject) => {
+          if (!isReady()) { reject(new Error('ROS not connected')); return; }
+          const svc = new ROSLIB.Service({ ros: r, name, serviceType: type });
+          const req = new ROSLIB.ServiceRequest(request);
+          svc.callService(req, resolve, reject);
+        });
       };
     },
 
@@ -197,6 +214,7 @@ const ROSConn = (() => {
     callServiceWithTimeout(name, type, request, timeoutSec) {
       const r = ensureRos();
       return new Promise((resolve, reject) => {
+        if (!isReady()) { reject(new Error('ROS not connected')); return; }
         const cid = 'service:' + (++actionSeq);
         let socket = r.socket;
 
