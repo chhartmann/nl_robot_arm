@@ -24,6 +24,7 @@ import threading
 
 import numpy as np
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from scipy.spatial.transform import Rotation
@@ -75,10 +76,18 @@ class WorldModel(Node):
                 self.create_subscription(
                     TFMessage, f"/model/{obj_id}/{suffix}", self._on_pose_info, 10)
 
-        self.create_service(GetObjects, "world_model/get_objects", self._srv_get_objects)
-        self.create_service(GetObjectPose, "world_model/get_object_pose", self._srv_get_pose)
+        # Services get their own callback group, separate from the pose
+        # subscriptions: with everything in the default mutually-exclusive
+        # group, subscription callbacks can delay service handling by seconds
+        # under load (rosbridge then reports "Timeout exceeded while waiting
+        # for service response").
+        srv_group = MutuallyExclusiveCallbackGroup()
+        self.create_service(GetObjects, "world_model/get_objects",
+                            self._srv_get_objects, callback_group=srv_group)
+        self.create_service(GetObjectPose, "world_model/get_object_pose",
+                            self._srv_get_pose, callback_group=srv_group)
         self.create_service(GetGraspPose, "world_model/get_grasp_pose",
-                            self._srv_get_grasp_pose)
+                            self._srv_get_grasp_pose, callback_group=srv_group)
         self.get_logger().info(
             f"world model up; tracking: {', '.join(CATALOG)}")
 

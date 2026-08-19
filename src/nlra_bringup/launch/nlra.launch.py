@@ -54,9 +54,13 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(
             os.path.join(agilus_moveit_share, "launch", "move_group.launch.py")))
 
+    # Pure-Python nodes below use no sim-clock features (no timers, TF lookups
+    # or stamped outputs of their own), so they run on wall time. Subscribing
+    # to /clock at ~900 Hz made their rclpy executors rebuild wait sets at that
+    # rate, burning 30-90% CPU each and stalling service responses past
+    # rosbridge's 5 s call timeout during startup load spikes.
     world_model = Node(package="nlra_world_model", executable="world_model",
-                       output="screen",
-                       parameters=[{"use_sim_time": True}])
+                       output="screen")
     # NOTE: no standalone motion_planner node here — the skill servers embed
     # their own MotionPlanner instance (same MoveItPy). A second standalone
     # node would only duplicate the "nlra_motion_planner_moveit" node name
@@ -65,11 +69,9 @@ def generate_launch_description():
                   output="screen",
                   parameters=[{"use_sim_time": True}])
     orchestrator = Node(package="nlra_orchestrator", executable="orchestrator",
-                        output="screen",
-                        parameters=[{"use_sim_time": True}])
+                        output="screen")
     nl_interface = Node(package="nlra_nl_interface", executable="nl_interface",
                         output="screen",
-                        parameters=[{"use_sim_time": True}],
                         condition=IfCondition(nl))
 
     # Web UI: rosbridge websocket server + static file server. The rosbridge
