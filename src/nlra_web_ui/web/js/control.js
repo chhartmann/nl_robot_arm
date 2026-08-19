@@ -24,6 +24,23 @@ const ControlPage = (() => {
     { name: 'z', label: 'Z' },
   ];
   const WORLD_OBJECTS_POLL_MS = 500;
+  // Keyboard jog bindings: X/Y/Z move the TCP in Cartesian space, 1-6 jog the
+  // joints. Holding Shift reverses the direction. Letters are matched on the
+  // typed character (event.key) so they follow the user's keyboard layout
+  // (e.g. QWERTZ users hit the key labeled Z for the Z axis). Digits are
+  // matched on the physical key position (event.code), which is the same
+  // number row on every layout.
+  const KEYBOARD_MAP = {
+    x: { type: 'cartesian', axis: 'x' },
+    y: { type: 'cartesian', axis: 'y' },
+    z: { type: 'cartesian', axis: 'z' },
+    Digit1: { type: 'axis', index: 0 },
+    Digit2: { type: 'axis', index: 1 },
+    Digit3: { type: 'axis', index: 2 },
+    Digit4: { type: 'axis', index: 3 },
+    Digit5: { type: 'axis', index: 4 },
+    Digit6: { type: 'axis', index: 5 },
+  };
   // Fill colors for the ghost objects, matched against the object id.
   const OBJECT_COLORS = {
     red: 0xff4444,
@@ -38,6 +55,8 @@ const ControlPage = (() => {
   let gripperTarget = 0;
   const axisMoves = new Map();
   const cartesianMoves = new Map();
+  const activeKeyboardKeys = new Map();
+  let keyboardBound = false;
   let robotModel = null;
   let robotScene = null;
   let robotLoadGeneration = 0;
@@ -179,7 +198,7 @@ const ControlPage = (() => {
       targetDegrees: { ...jointValues },
     };
     axisMoves.set(joint.name, move);
-    button.classList.add('active');
+    if (button) button.classList.add('active');
     showFeedback('running', `Moving ${joint.label} ${direction > 0 ? '+' : '-'}`);
     sendNextAxisStep(move);
   }
@@ -188,8 +207,9 @@ const ControlPage = (() => {
     const move = axisMoves.get(jointName);
     if (!move) return;
     move.pressed = false;
-    move.button.classList.remove('active');
+    if (move.button) move.button.classList.remove('active');
     axisMoves.delete(jointName);
+    cancelInFlightGoal(move);
   }
 
   function stopAllAxisMoves() {
@@ -200,7 +220,7 @@ const ControlPage = (() => {
     if (cartesianMoves.has(axis.name)) return;
     const move = { axis, direction, button, pressed: true, inFlight: false };
     cartesianMoves.set(axis.name, move);
-    button.classList.add('active');
+    if (button) button.classList.add('active');
     showFeedback('running', `Moving TCP ${axis.label} ${direction > 0 ? '+' : '-'}`);
     sendNextCartesianStep(move);
   }
@@ -209,8 +229,9 @@ const ControlPage = (() => {
     const move = cartesianMoves.get(axisName);
     if (!move) return;
     move.pressed = false;
-    move.button.classList.remove('active');
+    if (move.button) move.button.classList.remove('active');
     cartesianMoves.delete(axisName);
+    cancelInFlightGoal(move);
   }
 
   function stopAllCartesianMoves() {
@@ -220,6 +241,77 @@ const ControlPage = (() => {
   function stopAllMoves() {
     stopAllAxisMoves();
     stopAllCartesianMoves();
+    stopAllKeyboardMoves();
+  }
+
+  function cancelInFlightGoal(move) {
+    const goal = move.currentGoal;
+    if (move.inFlight && goal && goal.cancelAction) {
+      move.inFlight = false;
+      goal.cancelAction();
+    }
+  }
+
+  function isTypingTarget(target) {
+    if (!target) return false;
+    const tag = target.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+      target.isContentEditable;
+  }
+
+  function onKeyDown(event) {
+    if (isTypingTarget(event.target)) return;
+    const binding = KEYBOARD_MAP[event.code] ||
+      KEYBOARD_MAP[event.key.toLowerCase()];
+    if (!binding) return;
+    if (activeKeyboardKeys.has(event.code)) return;
+    event.preventDefault();
+    const direction = event.shiftKey ? -1 : 1;
+    activeKeyboardKeys.set(event.code, binding);
+    if (binding.type === 'cartesian') {
+      const axis = CARTESIAN_AXES.find(a => a.name === binding.axis);
+      startCartesianMove(axis, direction, null);
+    } else {
+      startAxisMove(JOINTS[binding.index], direction, null);
+    }
+  }
+
+  function onKeyUp(event) {
+    if (!activeKeyboardKeys.has(event.code)) return;
+    const binding = activeKeyboardKeys.get(event.code);
+    event.preventDefault();
+    activeKeyboardKeys.delete(event.code);
+    if (binding.type === 'cartesian') {
+      stopCartesianMove(binding.axis);
+    } else {
+      stopAxisMove(JOINTS[binding.index].name);
+    }
+  }
+
+  function stopAllKeyboardMoves() {
+    for (const [code, binding] of activeKeyboardKeys) {
+      if (binding.type === 'cartesian') {
+        stopCartesianMove(binding.axis);
+      } else {
+        stopAxisMove(JOINTS[binding.index].name);
+      }
+    }
+    activeKeyboardKeys.clear();
+  }
+
+  function bindKeyboard() {
+    if (keyboardBound) return;
+    keyboardBound = true;
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+  }
+
+  function unbindKeyboard() {
+    if (!keyboardBound) return;
+    keyboardBound = false;
+    window.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('keyup', onKeyUp);
+    stopAllKeyboardMoves();
   }
 
   function sendNextCartesianStep(move) {
@@ -228,7 +320,7 @@ const ControlPage = (() => {
     const translation = { x: 0, y: 0, z: 0 };
     translation[move.axis.name] = move.direction * CARTESIAN_STEP_M;
     move.inFlight = true;
-    ROSConn.sendActionGoal(
+    const goal = ROSConn.sendActionGoal(
       'skills/move_relative',
       'nlra_interfaces/action/MoveRelative',
       {
@@ -239,9 +331,12 @@ const ControlPage = (() => {
         velocity_scaling: CARTESIAN_VELOCITY_SCALING,
         acceleration_scaling: CARTESIAN_VELOCITY_SCALING,
       }
-    ).then((res) => {
+    );
+    move.currentGoal = goal;
+    goal.then((res) => {
       move.inFlight = false;
       const r = res.result || res;
+      if (r.cancelled) return;
       if (!r.success) {
         stopCartesianMove(move.axis.name);
         showFeedback('error', `Failed to move TCP ${move.axis.label}: ${r.message}`);
@@ -276,16 +371,19 @@ const ControlPage = (() => {
     };
 
     move.inFlight = true;
-    ROSConn.sendActionGoal(
+    const goal = ROSConn.sendActionGoal(
       'skills/move_joints',
       'nlra_interfaces/action/MoveJoints',
       {
         positions: JOINTS.map(j => nextTarget[j.name] * Math.PI / 180),
         duration: AXIS_MOVE_DURATION_SEC,
       }
-    ).then((res) => {
+    );
+    move.currentGoal = goal;
+    goal.then((res) => {
       move.inFlight = false;
       const r = res.result || res;
+      if (r.cancelled) return;
       if (!r.success) {
         stopAxisMove(move.joint.name);
         showFeedback('error', `Failed to move ${move.joint.label}: ${r.message}`);
@@ -779,11 +877,13 @@ const ControlPage = (() => {
   function onActivate() {
     startJointStateSubscription();
     startWorldObjectsPolling();
+    bindKeyboard();
     onResize();
   }
 
   function onDeactivate() {
     stopAllMoves();
+    unbindKeyboard();
   }
 
   return { init, onActivate, onDeactivate };

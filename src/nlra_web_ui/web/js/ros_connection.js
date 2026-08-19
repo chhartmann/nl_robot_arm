@@ -91,10 +91,11 @@ const ROSConn = (() => {
     // We therefore listen on the raw WebSocket for those ops instead.
     sendActionGoal(actionName, actionType, goalMsg, onFeedback) {
       const r = ensureRos();
-      return new Promise((resolve, reject) => {
-        const cid = 'action:' + (++actionSeq);
-        let socket = r.socket;
+      const cid = 'action:' + (++actionSeq);
+      let socket = r.socket;
+      let cancelled = false;
 
+      const promise = new Promise((resolve, reject) => {
         const handler = (event) => {
           let message;
           try {
@@ -107,7 +108,15 @@ const ROSConn = (() => {
             if (socket && socket.removeEventListener) {
               socket.removeEventListener('message', handler);
             }
-            if (message.result === true && message.values) {
+            if (cancelled) {
+              // The goal was cancelled from the client side; treat it as a
+              // clean stop rather than a failure so callers can distinguish
+              // "released the jog key" from a real action error. This must be
+              // checked before the result branch: rosbridge forwards the
+              // cancelled goal's actual result message (success=false,
+              // message="cancelled") with result:true.
+              resolve({ cancelled: true });
+            } else if (message.result === true && message.values) {
               resolve({ result: message.values, status: message.status });
             } else {
               reject(new Error(
@@ -149,6 +158,24 @@ const ROSConn = (() => {
           reject(new Error('WebSocket unavailable'));
         }
       });
+
+      // Cancel the in-progress goal. Safe to call even if the goal already
+      // completed: the rosbridge server ignores cancels for unknown ids and
+      // the pending result is handled by the `cancelled` flag above.
+      promise.cancelAction = () => {
+        cancelled = true;
+        try {
+          r.callOnConnection({
+            op: 'cancel_action_goal',
+            action: actionName,
+            id: cid,
+          });
+        } catch (e) {
+          // socket not ready; the goal will just complete on its own
+        }
+      };
+
+      return promise;
     },
 
     // Helper: create a service caller (returns a callable)
