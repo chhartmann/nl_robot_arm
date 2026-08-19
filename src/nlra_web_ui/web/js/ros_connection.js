@@ -187,5 +187,66 @@ const ROSConn = (() => {
         return new Promise((resolve, reject) => svc.callService(req, resolve, reject));
       };
     },
+
+    // Helper: call a service with a custom server-response timeout in seconds.
+    // roslibjs's Service.callService cannot set the rosbridge per-call
+    // `timeout` field, which defaults to 5 s. That is too short for blocking
+    // services like /nl_command that wait for the whole manipulation task to
+    // finish, so we send the raw call_service op and watch for the response
+    // on the socket ourselves (same approach as sendActionGoal).
+    callServiceWithTimeout(name, type, request, timeoutSec) {
+      const r = ensureRos();
+      return new Promise((resolve, reject) => {
+        const cid = 'service:' + (++actionSeq);
+        let socket = r.socket;
+
+        const handler = (event) => {
+          let message;
+          try {
+            message = JSON.parse(event.data);
+          } catch (e) {
+            return;
+          }
+          if (!message || message.id !== cid) return;
+          if (socket && socket.removeEventListener) {
+            socket.removeEventListener('message', handler);
+          }
+          if (message.op === 'service_response' && message.result === true) {
+            resolve(message.values);
+          } else {
+            reject(new Error(
+              typeof message.values === 'string' ? message.values : 'service call failed'));
+          }
+        };
+
+        const sendCall = () => {
+          r.callOnConnection({
+            op: 'call_service',
+            service: name,
+            type,
+            args: request || {},
+            id: cid,
+            timeout: timeoutSec,
+          });
+        };
+
+        if (!socket) {
+          r.once('connection', () => {
+            socket = r.socket;
+            if (socket && socket.addEventListener) {
+              socket.addEventListener('message', handler);
+              sendCall();
+            } else {
+              reject(new Error('WebSocket unavailable'));
+            }
+          });
+        } else if (socket.addEventListener) {
+          socket.addEventListener('message', handler);
+          sendCall();
+        } else {
+          reject(new Error('WebSocket unavailable'));
+        }
+      });
+    },
   };
 })();

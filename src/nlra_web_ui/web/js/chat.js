@@ -1,5 +1,9 @@
 // chat.js — NL chat interface via /nl_command service + orchestrator feedback
 const ChatPage = (() => {
+  // /nl_command blocks until the whole manipulation task finishes (the
+  // orchestrator allows up to 300 s). The default rosbridge service timeout is
+  // 5 s, so we pass an explicit long timeout on this call.
+  const NL_SERVICE_TIMEOUT_S = 300;
   let nlService = null;
   let feedbackSub = null;
   let lastGoalId = null;
@@ -16,8 +20,8 @@ const ChatPage = (() => {
 
   function setupServices() {
     if (nlService) return;
-    nlService = ROSConn.makeServiceCaller(
-      '/nl_command', 'nlra_interfaces/srv/NLCommand'
+    nlService = (request) => ROSConn.callServiceWithTimeout(
+      '/nl_command', 'nlra_interfaces/srv/NLCommand', request, NL_SERVICE_TIMEOUT_S
     );
 
     // Subscribe to orchestrator feedback for step-by-step updates
