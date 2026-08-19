@@ -156,14 +156,15 @@ button.primary:hover { background: var(--accent); }
 
 .joint-reading {
   display: grid;
-  grid-template-columns: 2rem 1fr;
+  grid-template-columns: auto auto;
+  justify-content: center;
   align-items: baseline;
   column-gap: 0.35rem;
 }
 
 .axis-label { font-size: 0.8rem; font-weight: 600; }
-.joint-row .joint-val { font-size: 0.8rem; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
-.joint-range { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.65rem; text-align: right; }
+.joint-row .joint-val { font-size: 0.8rem; color: var(--text); font-variant-numeric: tabular-nums; }
+.joint-range { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.65rem; text-align: center; }
 
 #cartesian-controls { display: flex; flex-direction: column; gap: 0.65rem; }
 
@@ -176,14 +177,15 @@ button.primary:hover { background: var(--accent); }
 
 .cartesian-reading {
   display: grid;
-  grid-template-columns: 2rem 1fr;
+  grid-template-columns: auto auto;
+  justify-content: center;
   align-items: baseline;
   column-gap: 0.35rem;
 }
 
 .cartesian-label { font-size: 0.8rem; font-weight: 600; }
-.cartesian-value { font-size: 0.8rem; color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
-.cartesian-step { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.7rem; text-align: right; }
+.cartesian-value { font-size: 0.8rem; color: var(--text); font-variant-numeric: tabular-nums; }
+.cartesian-step { grid-column: 1 / -1; color: var(--text-dim); font-size: 0.7rem; text-align: center; }
 
 .gripper-control {
   margin-bottom: 1rem;
