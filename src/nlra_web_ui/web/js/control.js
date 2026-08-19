@@ -52,7 +52,6 @@ const ControlPage = (() => {
 
   let jointValues = {};
   let gripperValue = 0;
-  let gripperTarget = 0;
   const axisMoves = new Map();
   const cartesianMoves = new Map();
   const activeKeyboardKeys = new Map();
@@ -172,15 +171,6 @@ const ControlPage = (() => {
 
   function bindButtons() {
     document.getElementById('btn-home').addEventListener('click', sendHome);
-    document.getElementById('btn-grasp').addEventListener('click', sendGrasp);
-    document.getElementById('btn-release').addEventListener('click', sendRelease);
-
-    const gs = document.getElementById('gripper-slider');
-    gs.addEventListener('input', () => {
-      document.getElementById('gripper-value').textContent =
-        parseFloat(gs.value).toFixed(2) + ' rad';
-      gripperTarget = parseFloat(gs.value);
-    });
 
     window.addEventListener('pointerup', stopAllMoves);
     window.addEventListener('pointercancel', stopAllMoves);
@@ -412,39 +402,6 @@ const ControlPage = (() => {
       showFeedback(r.success ? 'success' : 'error',
         r.success ? 'At home' : `Failed: ${r.message}`);
     }).catch((err) => showFeedback('error', `Home error: ${err}`));
-  }
-
-  function sendGrasp() {
-    const pos = gripperTarget;
-    showFeedback('running', `Grasping at ${pos.toFixed(2)} rad...`);
-    ROSConn.sendActionGoal(
-      'skills/grasp',
-      'nlra_interfaces/action/Grasp',
-      { position: pos, max_effort: 50.0 },
-      (fb) => {
-        if (fb.phase) showFeedback('running', `Grasp: ${fb.phase}`);
-      }
-    ).then((res) => {
-      const r = res.result || res;
-      showFeedback(r.success ? 'success' : 'error',
-        r.object_detected ? 'Object gripped' : (r.message || 'Grasp done'));
-    }).catch((err) => showFeedback('error', `Grasp error: ${err}`));
-  }
-
-  function sendRelease() {
-    showFeedback('running', 'Opening gripper...');
-    ROSConn.sendActionGoal(
-      'skills/release',
-      'nlra_interfaces/action/Release',
-      {},
-      (fb) => {
-        if (fb.phase) showFeedback('running', `Release: ${fb.phase}`);
-      }
-    ).then((res) => {
-      const r = res.result || res;
-      showFeedback(r.success ? 'success' : 'error',
-        r.success ? 'Gripper open' : `Failed: ${r.message}`);
-    }).catch((err) => showFeedback('error', `Release error: ${err}`));
   }
 
   function showFeedback(type, msg) {

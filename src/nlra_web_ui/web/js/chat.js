@@ -47,6 +47,7 @@ const ChatPage = (() => {
     showFeedback('running', 'Sending to robot...');
 
     nlService({ text }).then((resp) => {
+      renderTrace(resp);
       if (resp.success) {
         if (resp.task) {
           addMessage('system', `Grounded: ${resp.task} ${resp.args_json}`);
@@ -85,6 +86,60 @@ const ChatPage = (() => {
     div.className = `chat-msg ${type}`;
     div.textContent = text;
     log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  // Show the complete LLM input (system prompt incl. live world state + user
+  // text) and output (raw assistant reply / tool call) for each attempt round.
+  function renderTrace(resp) {
+    let trace;
+    try {
+      trace = JSON.parse(resp.llm_trace_json || '[]');
+    } catch (e) {
+      return;
+    }
+    if (!Array.isArray(trace) || trace.length === 0) return;
+
+    const log = document.getElementById('chat-log');
+    const wrap = document.createElement('div');
+    wrap.className = 'llm-trace';
+
+    const header = document.createElement('div');
+    header.className = 'llm-trace-header';
+    header.textContent = 'LLM input/output';
+    wrap.appendChild(header);
+
+    for (const entry of trace) {
+      const input = document.createElement('details');
+      input.className = 'llm-trace-round';
+      input.open = true;
+      const sIn = document.createElement('summary');
+      sIn.textContent = `Round ${entry.round} — LLM input`;
+      const preSys = document.createElement('pre');
+      preSys.textContent = `[system]\n${entry.system || ''}`;
+      const preUser = document.createElement('pre');
+      preUser.textContent = `[user]\n${entry.user || ''}`;
+      input.appendChild(sIn);
+      input.appendChild(preSys);
+      input.appendChild(preUser);
+      wrap.appendChild(input);
+
+      const output = document.createElement('details');
+      output.className = 'llm-trace-round';
+      output.open = true;
+      const sOut = document.createElement('summary');
+      sOut.textContent = `Round ${entry.round} — LLM output`;
+      const preOut = document.createElement('pre');
+      preOut.className = 'llm-response';
+      preOut.textContent = entry.assistant
+        ? JSON.stringify(entry.assistant, null, 2)
+        : '(no LLM reply)';
+      output.appendChild(sOut);
+      output.appendChild(preOut);
+      wrap.appendChild(output);
+    }
+
+    log.appendChild(wrap);
     log.scrollTop = log.scrollHeight;
   }
 
