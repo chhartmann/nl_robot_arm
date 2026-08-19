@@ -200,7 +200,7 @@ ros2 node list
 ros2 action list
 ```
 
-Supported tool tasks in the current code are `home`, `pick`, `place`, `pick_and_place`, and `move_joints`, plus a `get_grasp_pose` query. Joint targets use absolute degrees and joint aliases `a1`–`a6` (also `joint_1`–`joint_6`); the model is instructed about the limits in the source code.
+Supported tool tasks in the current code are `home`, `pick`, `place`, `pick_and_place`, `drop`, `lift`, `plan`, and the raw motion tasks `move_joints`/`move_axis`/`move_relative`/`move_to`/`grasp`/`release`, plus a `get_grasp_pose` query. Multi-object commands like "clean up the desk" are grounded into an `execute_plan` of ordered steps; the LLM receives the full live world state (positions and orientations) and chooses free drop spots (stack or side-by-side) in the tray, with LLM-in-the-loop retry on failure. Grasp poses are computed from the object's full 6-DOF orientation. Joint targets use absolute degrees and joint aliases `a1`–`a6` (also `joint_1`–`joint_6`); the model is instructed about the limits in the source code.
 
 ## Inspect and verify a running system
 
@@ -266,7 +266,7 @@ Use the default headless launch (`gui:=false`). Camera-based perception is not p
 - Current object poses come from simulation ground truth, not vision.
 - Numeric top-down IK is tailored to the tabletop scenario and is not general collision-aware Cartesian planning.
 - The NL layer currently depends on a cloud OpenAI-compatible endpoint.
-- Broader multi-object/multi-step planning and conversational context remain future work.
+- Multi-step planning now supports generic task sequences (pick/place/drop/lift/…); richer conversational context and spatial reasoning ("left of", "on top of") remain future work.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed roadmap.
 

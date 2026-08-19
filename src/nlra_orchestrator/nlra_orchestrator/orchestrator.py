@@ -15,11 +15,13 @@ import json
 import math
 import time
 
+import numpy as np
 import rclpy
 from rclpy.action import ActionClient, ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from scipy.spatial.transform import Rotation
 
 from geometry_msgs.msg import PoseStamped, Vector3, Quaternion
 from nlra_interfaces.action import ExecuteTask, Grasp, Home, MoveJoints, MoveTo, MoveRelative, MoveAxis, Release
@@ -91,6 +93,10 @@ TOOL0_FINGERTIP_OFFSET = 0.098
 # (grasp point = midpoint of the fingertip link origins; empirical, measured
 # on the cube). Used to aim the drop height in the place skill.
 GRASP_HANG = 0.017
+# Default raise distance for the lift primitive (m, straight up in base_link).
+LIFT_DISTANCE = 0.18
+# Tool-down orientation fallback (180 deg about x -> gripper +z points down).
+TOOL_DOWN = Quaternion(x=1.0, y=0.0, z=0.0, w=0.0)
 
 
 class Orchestrator(Node):
@@ -125,6 +131,13 @@ class Orchestrator(Node):
             JointState, "/joint_states", self._on_joint_state, 10,
             callback_group=self._cb)
 
+        # Held object tracking (for drop/place height + postconditions) and
+        # the active goal handle (for cancellation inside nested sub-plans).
+        self._held = None
+        self._held_size = None
+        self._last_grasp_orientation = None
+        self._active_goal = None
+
         ActionServer(self, ExecuteTask, "orchestrator/execute_task",
                      execute_callback=self._exec_task,
                      goal_callback=lambda _r: GoalResponse.ACCEPT,
@@ -132,7 +145,8 @@ class Orchestrator(Node):
                      callback_group=self._cb)
         self.get_logger().info(
             "orchestrator up: tasks home, pick, place, pick_and_place, "
-            "move_joints, move_axis, move_relative, move_to, grasp, release")
+            "drop, lift, plan, move_joints, move_axis, move_relative, "
+            "move_to, grasp, release")
 
     def _on_joint_state(self, msg):
         try:
@@ -259,6 +273,74 @@ class Orchestrator(Node):
         a_contact = (8.838 - width_cm) / 11.03
         return min(GRIPPER_FULLY_CLOSED, max(0.0, a_contact + GRASP_PRESS_DELTA))
 
+    # ------------------------------------------------------ pose helpers
+    def _quat_to_matrix(self, quat):
+        """World rotation matrix for a geometry_msgs/Quaternion."""
+        return Rotation.from_quat(
+            [quat.x, quat.y, quat.z, quat.w]).as_matrix()
+
+    def _pose_stamped(self, position, quat, frame_id="base_link"):
+        ps = PoseStamped()
+        ps.header.frame_id = frame_id
+        ps.pose.position.x = float(position[0])
+        ps.pose.position.y = float(position[1])
+        ps.pose.position.z = float(position[2])
+        ps.pose.orientation = quat
+        return ps
+
+    def _grasp_orientation(self, args):
+        """Tool orientation for a drop/place: LLM-provided orientation if any,
+        else the last grasp orientation, else tool-down."""
+        orient = args.get("orientation") or \
+            (args.get("placement") or {}).get("orientation")
+        if isinstance(orient, dict) and all(
+                k in orient for k in ("rx", "ry", "rz", "rw")):
+            q = Quaternion(x=float(orient["rx"]), y=float(orient["ry"]),
+                           z=float(orient["rz"]), w=float(orient["rw"]))
+            if not (q.x == 0.0 and q.y == 0.0 and q.z == 0.0 and q.w == 0.0):
+                return q
+        return getattr(self, "_last_grasp_orientation", None) or TOOL_DOWN
+
+    def _grasp_and_hold(self, obj_id, position, effort):
+        ok, msg = self._grasp_step(position, effort)
+        if ok:
+            self._held = obj_id
+            pose, _ = self._object_pose(obj_id)
+            self._held_size = pose[3] if pose is not None else None
+        return ok, msg
+
+    def _release_and_clear(self):
+        ok, msg = self._call(self._release, Release.Goal())
+        if ok:
+            self._held = None
+            self._held_size = None
+        return ok, msg
+
+    def _drop_steps_from(self, name, x, y, z, orient):
+        """Release a held object at world (x, y) with its bottom resting on
+        the support surface at height z. orient is the tool-down pose; the
+        approach axis is read from it so the transfer/lower/retreat are along
+        the gripper's actual approach direction, not necessarily vertical."""
+        R = self._quat_to_matrix(orient)
+        approach_dir = R[:, 2]            # gripper +z (toward support)
+        away_dir = -approach_dir          # away from the support
+
+        he = (self._held_size[2] / 2.0) if self._held_size else 0.025
+        support = np.array([x, y, z], dtype=float)
+        # fingertip-midpoint drop height: GRASP_RAISE above the support, or
+        # GRASP_HANG + half the held object's height so its bottom rests on
+        # the support (whichever is higher — fingertips must clear).
+        fingertip = support + away_dir * max(GRASP_RAISE, GRASP_HANG + he)
+        tool0 = fingertip - approach_dir * TOOL0_FINGERTIP_OFFSET
+        above = tool0 + away_dir * 0.10
+
+        return [
+            self._move_to_step(f"transfer:{name}", self._pose_stamped(above, orient)),
+            self._move_to_step(f"lower:{name}", self._pose_stamped(tool0, orient), 2.5),
+            (f"release:{name}", lambda: self._release_and_clear()),
+            self._move_to_step(f"retreat:{name}", self._pose_stamped(above, orient), 2.5),
+        ]
+
     # ---------------------------------------------------------------- plans
     def _plan_for(self, task, args):
         """Return list of (step_name, callable) or None."""
@@ -271,20 +353,27 @@ class Orchestrator(Node):
             return self._pick_steps(obj)
 
         if task == "place":
-            tgt = args.get("target_id", "blue_box")
-            return self._place_steps(tgt)
+            return self._place_steps(args)
 
         if task == "pick_and_place":
             obj = args.get("object_id", "red_cube")
-            tgt = args.get("target_id", "blue_box")
             steps = self._pick_steps(obj)
             if steps is None:
                 return None
-            more = self._place_steps(tgt)
+            more = self._place_steps(args)
             if more is None:
                 return None
             return steps + more + [("home", lambda: self._call(
                 self._home, Home.Goal(open_gripper=False)))]
+
+        if task == "drop":
+            return self._drop_steps(args)
+
+        if task == "lift":
+            return self._lift_steps(args)
+
+        if task == "plan":
+            return self._plan_steps(args)
 
         if task == "move_joints":
             return self._move_joints_steps(args)
@@ -436,109 +525,141 @@ class Orchestrator(Node):
             self._ground_err = err
             return None
 
-        # Remember the grasp orientation (tool pointing DOWN) so the place
-        # steps can reuse it — identity orientation would point the tool UP.
-        self._last_grasp_orientation = gpose.pose.orientation
+        # Remember the grasp orientation (tool pointing DOWN) so a later
+        # place/drop can reuse it.
+        orient = gpose.pose.orientation
+        self._last_grasp_orientation = orient
+        R = self._quat_to_matrix(orient)
+        approach_dir = R[:, 2]           # gripper +z in world (toward object)
+        away_dir = -approach_dir         # away from the object
 
         # Object width along the closing axis -> gentle press target angle.
         pose, perr = self._object_pose(obj_id)
         width = pose[3][0] if pose is not None else 0.05
-        grasp_pos = self._grasp_target_angle(width)
+        grasp_angle = self._grasp_target_angle(width)
         self.get_logger().info(
             f"grasp target angle for '{obj_id}' (w={width*100:.1f} cm): "
-            f"{grasp_pos:.3f} rad")
+            f"{grasp_angle:.3f} rad")
 
         # Absolute approach/grasp/lift poses in base_link (world == base_link
-        # in this sim; plan_to_pose transforms "world"->base_link if needed).
-        # The world model's grasp pose is the FINGERTIP-MIDPOINT height; the
-        # planner moves pose_link="tool0", which sits TOOL0_FINGERTIP_OFFSET
-        # above the fingertips (tool0 +z points DOWN in the grasp orientation),
-        # so every absolute z target must be raised by that offset.
-        gz = gpose.pose.position.z + TOOL0_FINGERTIP_OFFSET
+        # in this sim). The world model's grasp pose is the FINGERTIP-MIDPOINT;
+        # the planner moves pose_link="tool0", which sits TOOL0_FINGERTIP_OFFSET
+        # above the fingertips along tool0 +z (which points DOWN in the grasp
+        # orientation). The approach/lift are offset along the grasp pose's
+        # actual approach axis, so a non-vertical (side) grasp works too.
+        gpos = np.array([gpose.pose.position.x, gpose.pose.position.y,
+                         gpose.pose.position.z])
+        tool0_grasp = gpos - approach_dir * TOOL0_FINGERTIP_OFFSET
+        tool0_clear = tool0_grasp + away_dir * APPROACH_CLEARANCE
 
-        def _pose_at(z):
-            ps = PoseStamped()
-            ps.header.frame_id = "base_link"
-            ps.pose.position.x = gpose.pose.position.x
-            ps.pose.position.y = gpose.pose.position.y
-            ps.pose.position.z = z
-            ps.pose.orientation = gpose.pose.orientation
-            return ps
-
-        approach_pose = _pose_at(gz + APPROACH_CLEARANCE)
-        grasp_pose = _pose_at(gz)
-        lift_pose = _pose_at(gz + APPROACH_CLEARANCE)
+        approach_pose = self._pose_stamped(tool0_clear, orient)
+        grasp_pose = self._pose_stamped(tool0_grasp, orient)
+        lift_pose = self._pose_stamped(tool0_clear, orient)
 
         return [
             ("open_gripper", lambda: self._call(self._release, Release.Goal())),
             self._move_to_step(f"approach:{obj_id}", approach_pose),
             self._move_to_step(f"descend:{obj_id}", grasp_pose, 2.5),
-            (f"grasp:{obj_id}", lambda: self._grasp_step(
-                grasp_pos, GRIPPER_GRASP_EFFORT)),
+            (f"grasp:{obj_id}", lambda: self._grasp_and_hold(
+                obj_id, grasp_angle, GRIPPER_GRASP_EFFORT)),
             self._move_to_step(f"lift:{obj_id}", lift_pose, 6.0),
         ]
 
-    def _place_steps(self, tgt_id):
-        pose, err = self._object_pose(tgt_id)
-        if pose is None:
-            self._ground_err = err
-            return None
-        x, y, z, size, kind = pose
-        if kind == "tray":
-            # Support surface = the tray's interior floor. Its 2 cm-thick
-            # floor box is centered at the model origin, so the top is 1 cm
-            # above it.
-            support = z + 0.01
+    def _place_steps(self, args):
+        """Place a held object. If the LLM supplied an explicit world drop
+        point (placement {x, y, z}, z = support-surface height), use it
+        verbatim; otherwise fall back to the target's center/top."""
+        placement = args.get("placement") or {}
+        if all(k in placement for k in ("x", "y", "z")):
+            x = float(placement["x"])
+            y = float(placement["y"])
+            z = float(placement["z"])
         else:
-            # Support surface = the target's top.
-            support = z + size[2] / 2
-        # drop_z is the GRASP-POINT height (midpoint of the fingertip link
-        # origins, same convention as the pick). An attached object's center
-        # hangs GRASP_HANG below it, so its bottom sits at
-        # drop_z - GRASP_HANG - size[2]/2. Aim the bottom at the support, but
-        # never lower the fingers below GRASP_RAISE so the closed fingertips
-        # keep their clearance (same geometry constants as the world model —
-        # keep in sync). As in the pick, the planner moves tool0, so the
-        # fingertip-midpoint drop height must be raised by the tool0 offset.
-        drop_z = support + max(GRASP_RAISE, GRASP_HANG + size[2] / 2.0) \
-            + TOOL0_FINGERTIP_OFFSET
+            tgt_id = args.get("target_id", "blue_box")
+            pose, err = self._object_pose(tgt_id)
+            if pose is None:
+                self._ground_err = err
+                return None
+            x, y, z, size, kind = pose
+            if kind == "tray":
+                # Support surface = the tray's interior floor. Its 2 cm-thick
+                # floor box is centered at the model origin, so the top is
+                # 1 cm above it.
+                z = z + 0.01
+            else:
+                z = z + size[2] / 2
 
-        # Create absolute poses for transfer, lower, retreat
-        # Keep the tool pointing DOWN (the orientation the object was picked
-        # with). Identity (w=1.0) would point the tool UP. Fall back to
-        # identity only if no pick happened in this process yet.
-        orient = getattr(self, "_last_grasp_orientation", None)
-        if orient is None:
-            from geometry_msgs.msg import Quaternion
-            orient = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+        orient = self._grasp_orientation(args)
+        tgt_id = args.get("target_id", "target")
+        return self._drop_steps_from(f"place:{tgt_id}", x, y, z, orient)
 
-        above_pose = PoseStamped()
-        above_pose.header.frame_id = "base_link"
-        above_pose.pose.position.x = x
-        above_pose.pose.position.y = y
-        above_pose.pose.position.z = drop_z + 0.10
-        above_pose.pose.orientation = orient
+    def _drop_steps(self, args):
+        """Release a held object at an explicit world position (no target)."""
+        placement = args.get("placement") or {}
+        if not all(k in placement for k in ("x", "y", "z")):
+            self._ground_err = ("drop requires 'placement' with x, y, z "
+                                "(world meters; z = support-surface height)")
+            return None
+        orient = self._grasp_orientation(args)
+        return self._drop_steps_from(
+            "drop", float(placement["x"]), float(placement["y"]),
+            float(placement["z"]), orient)
 
-        drop_pose = PoseStamped()
-        drop_pose.header.frame_id = "base_link"
-        drop_pose.pose.position.x = x
-        drop_pose.pose.position.y = y
-        drop_pose.pose.position.z = drop_z
-        drop_pose.pose.orientation = orient
+    def _lift_steps(self, args):
+        """Raise the gripper straight up in base_link by a distance (m)."""
+        try:
+            dist = float(args.get("distance", LIFT_DISTANCE))
+        except (TypeError, ValueError):
+            self._ground_err = f"lift: distance {args.get('distance')!r} is not a number"
+            return None
+        if dist <= 0:
+            self._ground_err = "lift requires a positive distance (m)"
+            return None
+        goal = MoveRelative.Goal()
+        goal.translation = Vector3(x=0.0, y=0.0, z=dist)
+        goal.rotation_delta = Quaternion(x=0.0, y=0.0, z=0.0, w=0.0)
+        goal.reference_frame = "base_link"
+        goal.velocity_scaling = 0.2
+        goal.acceleration_scaling = 0.2
+        return [("lift", lambda: self._call(self._move_relative, goal))]
 
-        retreat_pose = PoseStamped()
-        retreat_pose.header.frame_id = "base_link"
-        retreat_pose.pose.position.x = x
-        retreat_pose.pose.position.y = y
-        retreat_pose.pose.position.z = drop_z + 0.10
-        retreat_pose.pose.orientation = orient
+    def _plan_steps(self, args):
+        """Generic multi-step plan: steps is an ordered list of task dicts.
+        Each step is grounded and executed lazily (just before it runs), so
+        later steps see the world state produced by earlier ones."""
+        steps = args.get("steps", [])
+        if not isinstance(steps, list) or not steps:
+            self._ground_err = "plan requires a 'steps' list"
+            return None
+        out = []
+        for i, sub in enumerate(steps):
+            if not isinstance(sub, dict) or "task" not in sub:
+                self._ground_err = f"plan step {i} must be an object with 'task'"
+                return None
+            out.append((f"subtask[{i}]:{sub['task']}",
+                        lambda s=sub: self._run_subtask(s)))
+        return out
 
-        return [
-            self._move_to_step(f"transfer:{tgt_id}", above_pose),
-            self._move_to_step(f"lower:{tgt_id}", drop_pose, 2.5),
-            (f"release:{tgt_id}", lambda: self._call(self._release, Release.Goal())),
-            self._move_to_step(f"retreat:{tgt_id}", retreat_pose, 2.5),
-        ]
+    def _run_subtask(self, sub):
+        """Ground + execute one sub-task of a plan (recursively reuses the
+        single-task planner). Returns (ok, message)."""
+        task = sub.get("task", "")
+        a = dict(sub)
+        a.pop("task", None)
+        try:
+            plan = self._plan_for(task, a)
+        except Exception as e:
+            return False, f"subtask '{task}' planning error: {e!r}"
+        if plan is None:
+            return False, self._ground_err or f"unknown subtask '{task}'"
+        for name, fn in plan:
+            if self._active_goal is not None and \
+                    self._active_goal.is_cancel_requested:
+                return False, "cancelled"
+            ok, msg = fn()
+            if not ok:
+                return False, f"subtask '{task}' step '{name}' failed: {msg}"
+        return True, f"subtask '{task}' ok"
 
     # ------------------------------------------------------------- executor
     def _verify_at_target(self, obj_id, tgt_id, xy_tol=0.12):
@@ -609,6 +730,7 @@ class Orchestrator(Node):
     def _run_plan(self, goal_handle, task, args, attempt, max_attempts):
         """Ground + execute one attempt. Returns (ok, code, message, failed_step)."""
         self._ground_err = ""
+        self._active_goal = goal_handle
         try:
             plan = self._plan_for(task, args)
         except Exception as e:

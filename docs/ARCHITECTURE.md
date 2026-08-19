@@ -143,7 +143,7 @@ verified in sim (headless, aarch64 + x86_64). As-built notes inline below.**
 - [x] Tabletop scene + colored objects (red_cube, green_cube, yellow_cylinder, orange_block dynamic; blue_box tray, table static)
 - [x] World poses via **per-model PosePublisher** (ground truth); static models need `pose_static` topic
 - [x] `nlra_world_model`: `get_objects` / `get_object_pose` / `get_grasp_pose` services
-- [x] `get_grasp_pose` answers "where/how to grasp an object" and by default returns the gripper parallel to the object (approach from above, finger closing axis aligned with the object's yaw); pick uses it, so pick grasps are orientation-aligned instead of yaw-agnostic
+- [x] `get_grasp_pose` answers "where/how to grasp an object" with a full 6-DOF pose computed from the object's complete orientation: the gripper approaches the object's most upward-facing face (box/block/cube) or from above across its axis (cylinder), with the finger closing axis aligned to the object's geometry — not merely its horizontal yaw; pick uses it, so picks grasp elongated/tilted/lying objects correctly
 - Perception is ground-truth from sim (camera-sensor render segfaults headless w/o GPU); vision-based detection deferred
 - **Done when:** World Model reports live object poses matching the scene. ✅
 
@@ -208,9 +208,9 @@ args blob and streams per-step feedback (`step`, `step_index`, `progress`).
 ## 7. Open Items / Future
 Phases 0–7 are complete in sim. Remaining/optional work:
 - **Vision-based perception** (sim camera → detection) to replace ground-truth poses — blocked headless by GPU/EGL (camera render segfaults); needs a GPU host or software-render pipeline.
-- More objects / multi-step & conditional NL commands; conversational multi-turn context.
+- More objects / richer conversational multi-turn context.
 - Local-LLM option for offline NL (currently cloud, model Qwen3.6-35B-A3B).
 - Isaac Sim upgrade path for photoreal perception / learned grasping.
 - Real Agilus bring-up via `kuka_rsi_driver` (KRC5/RSI) — the ros2_control HW abstraction keeps the whole stack above the driver unchanged.
 - Formal test suite (current verification is ad-hoc scripted checks, all passing).
-- Multi-object / multi-step task planning, spatial reasoning ("left of", "on top of").
+- Spatial reasoning ("left of", "on top of") and explicit per-command placement goals (multi-step planning already composes generic pick/place/drop/lift steps and performs LLM-in-the-loop placement retry; the tray occupancy grid is decided by the LLM from the live world state).

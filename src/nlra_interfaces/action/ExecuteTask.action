@@ -5,8 +5,15 @@
 # Known tasks:
 #   home            {}
 #   pick            {"object_id": "red_cube"}
-#   place           {"target_id": "blue_box"}   (assumes object held)
-#   pick_and_place  {"object_id": "red_cube", "target_id": "blue_box"}
+#   place           {"target_id": "blue_box", "placement": {x, y, z, mode?}}
+#                     (placement optional: explicit world drop point, z =
+#                      support-surface height; assumes object held)
+#   pick_and_place  {"object_id": "red_cube", "target_id": "blue_box",
+#                     "placement": {...}?}
+#   drop            {"placement": {"x", "y", "z"}}   (release at world pose)
+#   lift            {"distance": 0.18}               (raise straight up, m)
+#   plan            {"steps": [ {task, ...}, ... ]}  (ordered sub-task list)
+#   move_joints / move_axis / move_relative / move_to / grasp / release / home
 string task
 string args_json
 ---

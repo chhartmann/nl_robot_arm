@@ -13,10 +13,11 @@ This is the grounding layer: symbols (e.g. "red_cube") -> poses. In a later
 phase a perception pipeline can feed the same store instead of ground truth;
 the service API stays identical.
 
-get_grasp_pose answers "where/how would the robot grasp this object?" and by
-default returns a pose with the gripper parallel to the object: top-down
-approach with the finger closing axis aligned with the object's horizontal
-axes (its yaw).
+get_grasp_pose answers "where/how would the robot grasp this object?" and
+returns a full 6-DOF pose computed from the object's complete orientation:
+the gripper approaches the object's most upward-facing face (or, for a
+cylinder, from above across its axis), with the finger closing axis aligned
+to the object's geometry — not merely its horizontal yaw.
 """
 import math
 import threading
@@ -128,26 +129,68 @@ class WorldModel(Node):
             res.object = self._make_object(req.id)
         return res
 
-    def _object_yaw(self, ps: PoseStamped) -> float:
-        """Yaw of the object's local x-axis projected onto the ground plane.
+    def _compute_grasp(self, kind, size, p, R):
+        """Compute a 6-DOF grasp from the object's full orientation.
 
-        Robust to the object lying flat or flipped: the horizontal component
-        of its local x-axis is what the gripper must be parallel to.
+        R is the world<-object rotation matrix (columns = local axes in
+        world). Returns (grasp_pos, close, approach, note) where grasp_pos is
+        the fingertip-midpoint (numpy 3-vector, world), close is the gripper
+        +x (finger closing axis), approach is gripper +z (points toward the
+        object), and note is a human-readable description.
+
+        Box/cube/block: grasp perpendicular to the face whose outward normal
+        points most upward; close along the remaining local axis with the
+        largest horizontal component (so elongated objects are grasped across
+        their short dimension, fingers on the long faces). Cylinder: approach
+        from above; close across a diameter when standing, along the axis's
+        horizontal projection when lying down.
         """
-        x = Rotation.from_quat([
-            ps.pose.orientation.x, ps.pose.orientation.y,
-            ps.pose.orientation.z, ps.pose.orientation.w]).as_matrix()[:, 0]
-        if math.hypot(x[0], x[1]) < 1e-6:
-            return 0.0   # local x is vertical -> any yaw is parallel
-        return math.atan2(x[1], x[0])
+        z_world = np.array([0.0, 0.0, 1.0])
+        if kind == "cylinder":
+            axis = R[:, 2]                 # cylinder length direction (world)
+            if abs(axis[2]) > 0.5:
+                # standing: close across a horizontal diameter
+                close = R[:, 0].copy()
+                close[2] = 0.0
+                note = "side of standing cylinder, closing across the diameter"
+            else:
+                # lying: close along the axis's horizontal projection
+                close = axis.copy()
+                close[2] = 0.0
+                note = "top of lying cylinder, closing along its length"
+            nc = math.hypot(close[0], close[1])
+            close = close / nc if nc > 1e-6 else np.array([1.0, 0.0, 0.0])
+            approach = -z_world
+            # Vertical half-extent (generalized OBB bottom): the object rests
+            # GRASP_RAISE below the grasp point along the approach.
+            half = np.array(size) / 2.0
+            vhe = float(np.sum(np.abs(R[2, :]) * half))
+            grasp_pos = p.copy()
+            grasp_pos[2] = p[2] - vhe + GRASP_RAISE
+            return grasp_pos, close, approach, note
+
+        # box / block / cube: pick the face most aligned with world up
+        dots = np.abs(R[2, :])             # |z component| of each local axis
+        i = int(np.argmax(dots))
+        n = R[:, i].copy()
+        if n[2] < 0:
+            n = -n                         # outward normal of the top face
+        approach = -n                      # gripper +z onto the top face
+        others = [j for j in range(3) if j != i]
+        j = max(others, key=lambda k: math.hypot(R[0, k], R[1, k]))
+        close = R[:, j].copy()
+        half = size[i] / 2.0
+        grasp_pos = p + n * (GRASP_RAISE - half)
+        note = (f"face along local axis {i} up, closing along local axis {j}")
+        return grasp_pos, close, approach, note
 
     def _srv_get_grasp_pose(self, req, res):
-        """Grasp pose with the gripper parallel to the object (default).
+        """Full 6-DOF grasp pose from the object's complete orientation.
 
-        Orientation: gripper +z (finger pointing direction) straight down,
-        gripper +x (finger closing axis) parallel to the object's horizontal
-        axes. Position: GRASP_RAISE above the object's bottom so the closed
-        fingertips clear the table (see GRASP_RAISE).
+        Orientation: gripper +z (approach) onto the object's most-up face
+        (or from above for a cylinder); gripper +x (closing axis) aligned to
+        the object's geometry. Position: GRASP_RAISE above the object's
+        bottom so the closed fingertips clear the support (see GRASP_RAISE).
         """
         with self._lock:
             found = req.object_id in CATALOG and req.object_id in self._poses
@@ -157,29 +200,34 @@ class WorldModel(Node):
                            "or no pose yet")
             return res
 
+        meta = CATALOG[req.object_id]
+        if not meta["graspable"]:
+            res.message = (f"object '{req.object_id}' (kind '{meta['kind']}') "
+                           "is not graspable")
+            return res
+
         ps = self._make_object(req.object_id).pose
-        p = ps.pose.position
-        size = CATALOG[req.object_id]["size"]
-        z_bottom = p.z - size[2] / 2.0   # object rests on the tabletop
-        yaw = self._object_yaw(ps)
-        close = np.array([math.cos(yaw), math.sin(yaw), 0.0])
-        approach = np.array([0.0, 0.0, -1.0])
-        up = np.cross(approach, close)   # gripper +y for a right-handed frame
-        rot = Rotation.from_matrix(
-            np.column_stack([close, up, approach]))
-        q = rot.as_quat()                # x y z w
+        p = np.array([ps.pose.position.x, ps.pose.position.y,
+                      ps.pose.position.z])
+        q = ps.pose.orientation
+        R = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+
+        grasp_pos, close, approach, note = self._compute_grasp(
+            meta["kind"], meta["size"], p, R)
+        up = np.cross(approach, close)     # gripper +y, right-handed frame
+        rot = Rotation.from_matrix(np.column_stack([close, up, approach]))
+        q = rot.as_quat()                  # x y z w
 
         res.grasp_pose.header.frame_id = WORLD_FRAME
         res.grasp_pose.header.stamp = ps.header.stamp
-        res.grasp_pose.pose.position.x = p.x
-        res.grasp_pose.pose.position.y = p.y
-        res.grasp_pose.pose.position.z = z_bottom + GRASP_RAISE
+        res.grasp_pose.pose.position.x = float(grasp_pos[0])
+        res.grasp_pose.pose.position.y = float(grasp_pos[1])
+        res.grasp_pose.pose.position.z = float(grasp_pos[2])
         res.grasp_pose.pose.orientation.x = q[0]
         res.grasp_pose.pose.orientation.y = q[1]
         res.grasp_pose.pose.orientation.z = q[2]
         res.grasp_pose.pose.orientation.w = q[3]
-        res.message = (f"grasp pose for '{req.object_id}': gripper parallel to "
-                       f"object (closing axis at {math.degrees(yaw):.1f} deg), "
+        res.message = (f"grasp pose for '{req.object_id}': {note}, "
                        "approach from above")
         return res
 
