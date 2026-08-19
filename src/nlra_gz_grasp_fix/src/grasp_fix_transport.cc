@@ -13,6 +13,8 @@
 #include <gz/sim/System.hh>
 #include <gz/sim/Util.hh>
 #include <gz/sim/components/DetachableJoint.hh>
+#include <gz/sim/components/Joint.hh>
+#include <gz/sim/components/JointPosition.hh>
 #include <gz/sim/components/Link.hh>
 #include <gz/sim/components/Name.hh>
 #include <gz/sim/components/ParentEntity.hh>
@@ -44,6 +46,12 @@ class GraspFix final : public gz::sim::System,
     this->rightLinkName = _sdf->Get<std::string>("right_finger_link");
     this->leftSensorName = _sdf->Get<std::string>("left_contact_sensor");
     this->rightSensorName = _sdf->Get<std::string>("right_contact_sensor");
+    this->gripperJointName = _sdf->Get<std::string>(
+        "gripper_joint", this->gripperJointName).first;
+    this->gripperClosedAngle = _sdf->Get<double>(
+        "gripper_closed_angle", this->gripperClosedAngle).first;
+    this->gripperOpenAngle = _sdf->Get<double>(
+        "gripper_open_angle", this->gripperOpenAngle).first;
     this->gripCountThreshold = _sdf->Get<unsigned int>(
         "grip_count_threshold", this->gripCountThreshold).first;
     this->releaseCountThreshold = _sdf->Get<unsigned int>(
@@ -74,6 +82,8 @@ class GraspFix final : public gz::sim::System,
       this->attachedModel = gz::sim::kNullEntity;
       this->releaseCount = 0;
       this->detachRequested = false;
+      this->gripCandidate = gz::sim::kNullEntity;
+      this->gripCount = 0;
     }
 
     if (this->attachRequested != gz::sim::kNullEntity &&
@@ -111,23 +121,51 @@ class GraspFix final : public gz::sim::System,
     const auto rightObjects = this->TouchedObjects(rightContacts, _ecm);
     gz::sim::Entity candidateModel = gz::sim::kNullEntity;
     gz::sim::Entity candidateLink = gz::sim::kNullEntity;
-    for (const auto &[model, link] : leftObjects)
+
+    if (leftObjects.size() == 1 && rightObjects.size() == 1)
     {
-      const auto right = rightObjects.find(model);
-      if (right != rightObjects.end())
+      const auto &[leftModel, leftLink] = *leftObjects.begin();
+      const auto &[rightModel, rightLink] = *rightObjects.begin();
+      if (leftModel == rightModel)
       {
-        candidateModel = model;
-        candidateLink = right->second;
-        break;
+        candidateModel = leftModel;
+        candidateLink = leftLink;
+      }
+    }
+
+    // A curved or compliant object can contact only one fingertip at the
+    // nominal target angle. Once the gripper is actually closing, a
+    // persistent one-sided contact is sufficient for the simulation grasp
+    // fix. Requiring both sensors makes cylinders and edge contacts fail.
+    if (candidateModel == gz::sim::kNullEntity &&
+        this->GripperIsClosed(_ecm))
+    {
+      if (leftObjects.size() == 1 && rightObjects.empty())
+      {
+        candidateModel = leftObjects.begin()->first;
+        candidateLink = leftObjects.begin()->second;
+      }
+      else if (rightObjects.size() == 1 && leftObjects.empty())
+      {
+        candidateModel = rightObjects.begin()->first;
+        candidateLink = rightObjects.begin()->second;
       }
     }
 
     if (this->detachableJoint != gz::sim::kNullEntity)
     {
-      if (candidateModel == this->attachedModel)
+      // Contact manifolds can flicker while the arm transfers an object.
+      // Only an opened gripper is an intentional release; losing contact
+      // while closed must not remove the fixed joint.
+      if (this->GripperIsOpen(_ecm))
+      {
+        if (++this->releaseCount >= this->releaseCountThreshold)
+          this->detachRequested = true;
+      }
+      else
+      {
         this->releaseCount = 0;
-      else if (++this->releaseCount >= this->releaseCountThreshold)
-        this->detachRequested = true;
+      }
       return;
     }
 
@@ -149,10 +187,30 @@ class GraspFix final : public gz::sim::System,
     this->palmLink = this->LinkByName(this->palmLinkName, _ecm);
     this->leftLink = this->LinkByName(this->leftLinkName, _ecm);
     this->rightLink = this->LinkByName(this->rightLinkName, _ecm);
+    this->gripperJoint = _ecm.EntityByComponents(
+        gz::sim::components::Joint(),
+        gz::sim::components::Name(this->gripperJointName));
     if (this->palmLink == gz::sim::kNullEntity ||
         this->leftLink == gz::sim::kNullEntity ||
-        this->rightLink == gz::sim::kNullEntity)
+        this->rightLink == gz::sim::kNullEntity ||
+        this->gripperJoint == gz::sim::kNullEntity)
+    {
+      if (this->gripperJoint == gz::sim::kNullEntity)
+        gzerr << "GraspFix could not resolve gripper joint ["
+              << this->gripperJointName << "].\n";
       return false;
+    }
+
+    // Ask the physics system to publish the knuckle position into the ECM so
+    // GripperIsClosed/GripperIsOpen can observe the actual close/open state.
+    // Physics only fills JointPosition for joints that already have the
+    // component, so create it here with a neutral initial value.
+    if (_ecm.Component<gz::sim::components::JointPosition>(
+            this->gripperJoint) == nullptr)
+    {
+      _ecm.CreateComponent(this->gripperJoint,
+          gz::sim::components::JointPosition({0.0}));
+    }
 
     const auto leftSensor = _ecm.EntityByComponents(
         gz::sim::components::Name(this->leftSensorName),
@@ -186,6 +244,24 @@ class GraspFix final : public gz::sim::System,
     return modelLink != gz::sim::kNullEntity ? modelLink :
         _ecm.EntityByComponents(gz::sim::components::Link(),
             gz::sim::components::Name(_name));
+  }
+
+  private: bool GripperIsClosed(
+      const gz::sim::EntityComponentManager &_ecm) const
+  {
+    const auto *position = _ecm.Component<gz::sim::components::JointPosition>(
+        this->gripperJoint);
+    return position != nullptr && !position->Data().empty() &&
+        position->Data()[0] >= this->gripperClosedAngle;
+  }
+
+  private: bool GripperIsOpen(
+      const gz::sim::EntityComponentManager &_ecm) const
+  {
+    const auto *position = _ecm.Component<gz::sim::components::JointPosition>(
+        this->gripperJoint);
+    return position != nullptr && !position->Data().empty() &&
+        position->Data()[0] <= this->gripperOpenAngle;
   }
 
   private: std::unordered_map<gz::sim::Entity, gz::sim::Entity> TouchedObjects(
@@ -235,6 +311,7 @@ class GraspFix final : public gz::sim::System,
   private: gz::sim::Entity palmLink{gz::sim::kNullEntity};
   private: gz::sim::Entity leftLink{gz::sim::kNullEntity};
   private: gz::sim::Entity rightLink{gz::sim::kNullEntity};
+  private: gz::sim::Entity gripperJoint{gz::sim::kNullEntity};
   private: gz::sim::Entity detachableJoint{gz::sim::kNullEntity};
   private: gz::sim::Entity attachedModel{gz::sim::kNullEntity};
   private: gz::sim::Entity gripCandidate{gz::sim::kNullEntity};
@@ -244,6 +321,7 @@ class GraspFix final : public gz::sim::System,
   private: std::string rightLinkName;
   private: std::string leftSensorName;
   private: std::string rightSensorName;
+  private: std::string gripperJointName{"robotiq_85_left_knuckle_joint"};
   private: gz::transport::Node node;
   private: std::mutex contactMutex;
   private: gz::msgs::Contacts leftContacts;
@@ -253,6 +331,8 @@ class GraspFix final : public gz::sim::System,
   private: std::chrono::milliseconds contactTimeout{50};
   private: unsigned int gripCountThreshold{10};
   private: unsigned int releaseCountThreshold{20};
+  private: double gripperClosedAngle{0.20};
+  private: double gripperOpenAngle{0.08};
   private: unsigned int gripCount{0};
   private: unsigned int releaseCount{0};
   private: bool detachRequested{false};

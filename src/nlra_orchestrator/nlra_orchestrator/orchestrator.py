@@ -49,7 +49,15 @@ JOINT_INDEX = {
 # ("reached", no object) or the fingers keep creeping into the object. The
 # grasp skill detects the stall and leaves this low-force command active until
 # release, maintaining the normal force required for physical friction.
-GRIPPER_FULLY_CLOSED = 0.8     # rad, knuckle fully closed
+# Curved or compliant objects (e.g. a cylinder) can let the position servo
+# reach this calibrated angle before Gazebo's soft box-curve contact develops
+# enough normal force to stall the knuckle, so the grasp reports "no object"
+# even though a fingertip is touching it. _grasp_step then re-issues a firm
+# full-close (GRIPPER_FULLY_CLOSED) so the fingers press until they physically
+# block; an empty close still reaches target with no stall, so this creates no
+# false positives. The nlra_gz_grasp_fix plugin attaches the object on that
+# persistent contact while the knuckle is closing, so the lift is reliable.
+GRIPPER_FULLY_CLOSED = 0.8     # rad, knuckle fully closed (firm-close fallback)
 # Firm-grip effort: the knuckle's URDF effort limit is 50 N, the maximum
 # squeeze the joint can apply regardless of the requested value.
 GRIPPER_GRASP_EFFORT = 50.0
@@ -169,14 +177,31 @@ class Orchestrator(Node):
         return res.grasp_pose, ""
 
     def _grasp_step(self, position, max_effort):
-        """Close the gripper; succeed only if an object was actually caught."""
+        """Close the gripper; succeed only if an object was actually caught.
+
+        A curved or compliant object (e.g. a cylinder) can let the position
+        servo reach the calibrated target angle before Gazebo's soft box-curve
+        contact develops enough normal force to stall the knuckle. The grasp
+        then wrongly reports "no object" even though the fingers are touching
+        it. Re-issuing a firm, full-close command drives the fingers further
+        until they physically block on the object (a real stall). An empty
+        close still reaches the target with no stall, so this does not create
+        false positives.
+        """
         ok, msg, res = self._call_raw(
             self._grasp, Grasp.Goal(position=position, max_effort=max_effort))
         if not ok:
             return False, msg
-        if res is None or not res.object_detected:
-            return False, "gripper closed without contact (no object between fingers)"
-        return True, "object firmly gripped; holding pressure until release"
+        if res is not None and res.object_detected:
+            return True, "object firmly gripped; holding pressure until release"
+        ok, msg, res = self._call_raw(
+            self._grasp,
+            Grasp.Goal(position=GRIPPER_FULLY_CLOSED, max_effort=max_effort))
+        if not ok:
+            return False, msg
+        if res is not None and res.object_detected:
+            return True, "object gripped after firm close"
+        return False, "gripper closed without contact (no object between fingers)"
 
     def _call(self, client, goal, timeout=60.0):
         ok, msg, _ = self._call_raw(client, goal, timeout)

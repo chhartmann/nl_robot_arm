@@ -14,11 +14,13 @@ controller_manager:
     # Gripper: single-DOF position controller on the actuated knuckle.
     # Position commands in gz_ros2_control are velocity setpoints, so the
     # fingers are driven kinematically (the followers track via software
-    # mimic). On an object the goal never completes (the controller has no
-    # stall detection in position mode); the grasp skill detects the stall and
-    # retains a small over-close command, maintaining physical contact force
-    # until a release goal preempts it.  This is a friction grip, not a
-    # virtual attachment.
+    # mimic). On an object the goal may complete before the (soft) contact
+    # stalls; the grasp skill detects a true stall when it occurs, and the
+    # orchestrator additionally re-issues a firm full-close so curved/soft
+    # objects still block the fingers. The nlra_gz_grasp_fix plugin creates a
+    # fixed detachable joint on fingertip contact while the knuckle is closing
+    # and removes it only once the knuckle opens, so the held object is
+    # virtually attached (not friction-only) during transfer.
     gripper_controller:
       type: position_controllers/GripperActionController
 

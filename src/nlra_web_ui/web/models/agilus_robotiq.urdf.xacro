@@ -137,10 +137,10 @@
       <robot_param_node>robot_state_publisher</robot_param_node>
       <parameters>$(arg controller_config)</parameters>
     </plugin>
-    <!-- Gazebo Harmonic port of gazebo_grasp_fix: when both fingertip contact
-         sensors touch the same dynamic object, the plugin creates a fixed
-         detachable joint to the gripper base. It removes that joint once both
-         contacts have been absent long enough for the gripper to open. -->
+    <!-- Gazebo Harmonic grasp fix: after the gripper starts closing, a
+         persistent fingertip contact creates a fixed detachable joint to the
+         gripper base. The joint is removed only after the knuckle opens, so
+         transient contact loss cannot drop an object during transfer. -->
     <plugin filename="libnlra_gz_grasp_fix.so" name="nlra::systems::GraspFix">
       <!-- The fixed base joint is reduced into link_6 during URDF->SDF conversion. -->
       <palm_link>${prefix}link_6</palm_link>
@@ -148,6 +148,9 @@
       <right_finger_link>${prefix}robotiq_85_right_finger_tip_link</right_finger_link>
       <left_contact_sensor>left_grasp_contact</left_contact_sensor>
       <right_contact_sensor>right_grasp_contact</right_contact_sensor>
+      <gripper_joint>${prefix}robotiq_85_left_knuckle_joint</gripper_joint>
+      <gripper_closed_angle>0.20</gripper_closed_angle>
+      <gripper_open_angle>0.08</gripper_open_angle>
       <grip_count_threshold>10</grip_count_threshold>
       <release_count_threshold>20</release_count_threshold>
     </plugin>
