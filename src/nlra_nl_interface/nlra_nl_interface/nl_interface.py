@@ -344,13 +344,16 @@ class NLInterface(Node):
         resp.success = False
         resp.task = ""
         resp.args_json = ""
+        resp.llm_trace_json = ""
 
         MAX_ROUNDS = 3
         last_error = ""
+        trace = []
         for round_ in range(1, MAX_ROUNDS + 1):
             objs = self._world_objects()
             if objs is None:
                 resp.error = "world model unavailable"
+                resp.llm_trace_json = json.dumps(trace)
                 return resp
             system = SYSTEM_TMPL.format(objects=self._describe_objects(objs))
 
@@ -364,8 +367,11 @@ class NLInterface(Node):
             msg, err = llm_chat(
                 [{"role": "system", "content": system},
                  {"role": "user", "content": user}], tools=TOOLS)
+            trace.append({"round": round_, "system": system, "user": user,
+                          "assistant": msg})
             if msg is None:
                 resp.error = f"LLM error: {err}"
+                resp.llm_trace_json = json.dumps(trace)
                 return resp
 
             calls = msg.get("tool_calls") or []
@@ -373,6 +379,7 @@ class NLInterface(Node):
                 # No function call: informational / refusal answer
                 resp.success = True
                 resp.response = (msg.get("content") or "").strip()
+                resp.llm_trace_json = json.dumps(trace)
                 return resp
 
             try:
@@ -380,9 +387,11 @@ class NLInterface(Node):
                 args = json.loads(fn.get("arguments") or "{}")
             except (KeyError, json.JSONDecodeError) as e:
                 resp.error = f"bad tool call from LLM: {e}"
+                resp.llm_trace_json = json.dumps(trace)
                 return resp
 
             if fn.get("name") == "get_grasp_pose":
+                resp.llm_trace_json = json.dumps(trace)
                 return self._answer_grasp_pose(resp, args)
 
             if fn.get("name") == "execute_plan":
@@ -402,6 +411,7 @@ class NLInterface(Node):
                 resp.args_json = args_json
                 resp.response = msg_txt
                 resp.error = ""
+                resp.llm_trace_json = json.dumps(trace)
                 return resp
 
             last_error = msg_txt
@@ -409,6 +419,7 @@ class NLInterface(Node):
 
         resp.success = False
         resp.error = f"{last_error} (after {MAX_ROUNDS} attempts)"
+        resp.llm_trace_json = json.dumps(trace)
         return resp
 
 

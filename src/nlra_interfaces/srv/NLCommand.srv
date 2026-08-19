@@ -6,3 +6,4 @@ string task          # grounded task dispatched (empty if none)
 string args_json     # grounded arguments
 string response      # natural-language answer / explanation
 string error         # empty on success
+string llm_trace_json  # per-attempt LLM input/output (system prompt, user text, raw assistant reply)
