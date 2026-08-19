@@ -221,9 +221,17 @@ button.primary:hover { background: var(--accent); }
 
 /* ── NL Chat ── */
 .chat-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  height: 128px;
+}
+
+.chat-left {
   display: flex;
   flex-direction: column;
-  height: 128px;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .viz-panel { grid-column: 3; grid-row: 1; }
@@ -231,13 +239,12 @@ button.primary:hover { background: var(--accent); }
 .chat-panel { grid-column: 2 / 4; grid-row: 2; height: 190px; overflow: hidden; }
 
 .chat-log {
-  flex: 1;
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem;
-  margin-bottom: 0.5rem;
+  min-width: 0;
 }
 
 .chat-hint { color: var(--text-dim); font-style: italic; font-size: 0.85rem; }
@@ -252,25 +259,10 @@ button.primary:hover { background: var(--accent); }
 .chat-msg.error { color: var(--error); }
 .chat-msg.error::before { content: "✗ "; font-weight: 600; }
 
-.chat-progress {
-  padding: 0.5rem 1rem;
-  margin-bottom: 0.5rem;
-  border-radius: var(--radius);
-  font-size: 0.85rem;
-  background: var(--surface2);
-  border: 1px solid var(--warning);
-  color: var(--warning);
-}
-
-.chat-progress.hidden { display: none; }
-
-.chat-input-row {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.chat-input-row input {
+#chat-input {
   flex: 1;
+  resize: none;
+  font-family: inherit;
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
@@ -280,7 +272,7 @@ button.primary:hover { background: var(--accent); }
   outline: none;
 }
 
-.chat-input-row input:focus { border-color: var(--accent); }
+#chat-input:focus { border-color: var(--accent); }
 
 /* ── Diagnostics ── */
 .diag-layout {

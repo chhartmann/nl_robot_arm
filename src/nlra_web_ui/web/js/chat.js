@@ -7,7 +7,10 @@ const ChatPage = (() => {
   function init() {
     document.getElementById('btn-chat-send').addEventListener('click', sendCommand);
     document.getElementById('chat-input').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') sendCommand();
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendCommand();
+      }
     });
   }
 
@@ -37,25 +40,29 @@ const ChatPage = (() => {
     setupServices();
 
     addMessage('user', text);
-    showProgress('Sending to robot...');
+    showFeedback('running', 'Sending to robot...');
 
     nlService({ text }).then((resp) => {
-      hideProgress();
       if (resp.success) {
         if (resp.task) {
           addMessage('system', `Grounded: ${resp.task} ${resp.args_json}`);
         }
         if (resp.response) {
           addMessage('robot', resp.response);
+          showFeedback('success', resp.response);
         } else if (!resp.task) {
           addMessage('robot', '(done, no message)');
+          showFeedback('success', '(done, no message)');
+        } else {
+          showFeedback('success', 'Task complete');
         }
       } else {
         addMessage('error', resp.error || 'Unknown error');
+        showFeedback('error', resp.error || 'Unknown error');
       }
     }).catch((err) => {
-      hideProgress();
       addMessage('error', `Service call failed: ${err}`);
+      showFeedback('error', `Service call failed: ${err}`);
     });
   }
 
@@ -65,7 +72,7 @@ const ChatPage = (() => {
     const step = fb.step || '';
     const idx = (fb.step_index || 0) + 1;
     const total = fb.step_count || '?';
-    showProgress(`[${idx}/${total}] ${step} (${pct}%)`);
+    showFeedback('running', `[${idx}/${total}] ${step} (${pct}%)`);
   }
 
   function addMessage(type, text) {
@@ -77,14 +84,14 @@ const ChatPage = (() => {
     log.scrollTop = log.scrollHeight;
   }
 
-  function showProgress(text) {
-    const el = document.getElementById('chat-progress');
-    el.textContent = text;
-    el.classList.remove('hidden');
-  }
-
-  function hideProgress() {
-    document.getElementById('chat-progress').classList.add('hidden');
+  function showFeedback(type, msg) {
+    const bar = document.getElementById('control-feedback');
+    bar.className = `feedback-bar ${type}`;
+    bar.textContent = msg;
+    bar.classList.remove('hidden');
+    if (type === 'success' || type === 'error') {
+      setTimeout(() => bar.classList.add('hidden'), 4000);
+    }
   }
 
   function onActivate() {
