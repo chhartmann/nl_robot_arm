@@ -223,7 +223,7 @@ SYSTEM_TMPL = (
 
 def llm_chat(messages, tools=None, timeout=90, retries=2):
     """Minimal OpenAI-compatible chat call via urllib (no SDK needed)."""
-    body = {"model": LLM_MODEL, "messages": messages, "max_tokens": 400}
+    body = {"model": LLM_MODEL, "messages": messages, "max_tokens": 2048}
     if tools:
         body["tools"] = tools
         body["tool_choice"] = "auto"
