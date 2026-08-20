@@ -150,19 +150,20 @@ ros2 launch nlra_bringup nlra.launch.py world:=empty_bullet.sdf
 ros2 launch nlra_bringup nlra.launch.py nl:=false
 ```
 
-The full launch starts in stages so that simulation, bridges, services, and action servers are available before the language node:
+The full launch starts components as soon as their dependencies are ready (no
+fixed delays): the pure-Python stack nodes (pose bridge, world model, skills,
+orchestrator, NL interface, web UI) start right after the stale-process reset,
+while `move_group` and the skill servers start once a readiness gate observes
+the arm controller active. On this host the stack is fully up in ~15 s:
 
 | Approx. time | Components |
 | --- | --- |
 | 0 s | Gazebo, robot spawn, controllers |
-| 25 s | Gazebo/ROS bridges |
-| 30 s | World model and MoveIt move group |
-| 40 s | Skill servers |
-| 45 s | Orchestrator |
-| 50 s | NL interface |
-| 55 s | NL GUI (when enabled by the launch condition) |
+| ~2 s | pose bridge, world model, orchestrator, NL interface, rosbridge, web UI |
+| ~10 s | MoveIt move group (after controllers are active) |
+| ~12 s | Skill servers (embed the MoveItPy motion planner) |
 
-Wait for startup to finish before sending a command. The NL interface opens a GUI when `DISPLAY` is available and otherwise falls back to a terminal REPL.
+Wait for startup to finish before sending a command. The NL interface opens a GUI when `DISPLAY` is available and otherwise falls back to a terminal REPL. Startup automatically takes longer on slower hosts.
 
 You can also run a one-off command without entering a shell:
 

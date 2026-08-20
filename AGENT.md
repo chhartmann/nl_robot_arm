@@ -139,11 +139,13 @@ You can also run directly via Pixi without an interactive shell:
 pixi run ros2 launch nlra_bringup nlra.launch.py
 ```
 
-The full launch starts components in stages: Gazebo and the robot first, the
-pose bridge at about 25 seconds, world model and MoveIt `move_group` at about
-30 seconds, skill servers at about 40 seconds, orchestrator at about 45
-seconds, and the NL interface + web UI at about 50–55 seconds. Allow the
-stack to finish starting before sending commands.
+The full launch starts components as soon as their dependencies are ready:
+the pure-Python stack nodes (pose bridge, world model, skills, orchestrator,
+NL interface, web UI) start right after the stale-process reset; `move_group`
+and the skill servers start once a readiness gate observes the arm controller
+active. There are no fixed startup delays, so the stack adapts to the host's
+speed (about 15 seconds on this machine). Allow the stack to finish starting
+before sending commands.
 
 The robot-only launch is also available:
 

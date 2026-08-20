@@ -4,19 +4,23 @@
   ros2 launch nlra_bringup nlra.launch.py gui:=true  # with Gazebo GUI
   ros2 launch nlra_bringup nlra.launch.py nl:=false  # without the NL interface
 
-Order matters: sim first, then (delayed) bridges + world model + move_group +
-motion_planner + skills + orchestrator + NL interface + web UI. Delays are
-conservative for slow hosts; each node is independently restartable at runtime.
+Order matters: sim first. The pure-Python stack nodes (world model, skills,
+orchestrator, NL interface, web UI) discover their services/actions lazily, so
+they start as soon as the stale-process reset finishes. move_group and the
+skill servers (whose MoveItPy blocks on move_group) start only once a
+readiness gate observes the arm_controller active — no fixed delays, so the
+stack adapts to the host's speed.
 
 The NL web UI is served at http://localhost:8080 and connects to rosbridge
 on ws://localhost:9090. Open the browser to control the robot.
 """
 import os
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, RegisterEventHandler, TimerAction
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -108,8 +112,17 @@ def generate_launch_description():
             "pkill -TERM -f '[r]osbridge_websocket' || true",
             "pkill -TERM -f '[m]ove_group' || true",
             "pkill -TERM -f '[p]arameter_bridge.*object_pose_bridge' || true",
+            "pkill -TERM -f '[w]ait_sim_ready' || true",
             "sleep 1",
         ])],
+        output="screen")
+
+    # Readiness gate: exits once the arm_controller reports "active" (sim,
+    # robot spawn and controllers are up). Started after reset_stack so the
+    # reset's pkill above never races the freshly launched gate.
+    wait_sim_ready = ExecuteProcess(
+        cmd=[os.path.join(get_package_prefix("nlra_bringup"), "lib",
+                          "nlra_bringup", "wait_sim_ready.sh")],
         output="screen")
 
     return LaunchDescription([
@@ -118,10 +131,20 @@ def generate_launch_description():
         DeclareLaunchArgument("nl", default_value="true"),
         reset_stack,
         sim,
-        TimerAction(period=25.0, actions=[pose_bridge]),
-        TimerAction(period=30.0, actions=[world_model, move_group]),
-        TimerAction(period=40.0, actions=[skills]),
-        TimerAction(period=45.0, actions=[orchestrator]),
-        TimerAction(period=50.0, actions=[nl_interface, rosbridge_server]),
-        TimerAction(period=55.0, actions=[web_server]),
+        # Tolerant stack nodes + pose bridge: no hard ordering, so start them
+        # as soon as the stale-process reset finishes.
+        RegisterEventHandler(OnProcessExit(
+            target_action=reset_stack,
+            on_exit=[pose_bridge, world_model, orchestrator, nl_interface,
+                     rosbridge_server, web_server, wait_sim_ready])),
+        # move_group needs the controllers + /clock, so wait for the gate.
+        RegisterEventHandler(OnProcessExit(
+            target_action=wait_sim_ready,
+            on_exit=[move_group])),
+        # Skills embed MoveItPy, which blocks until move_group is ready
+        # (~0.5 s after its process starts); a short buffer plus MoveItPy's own
+        # wait covers that gap.
+        RegisterEventHandler(OnProcessExit(
+            target_action=wait_sim_ready,
+            on_exit=[TimerAction(period=2.0, actions=[skills])])),
     ])

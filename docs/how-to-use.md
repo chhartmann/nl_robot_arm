@@ -49,17 +49,20 @@ ros2 launch nlra_bringup nlra.launch.py world:=empty_bullet.sdf
 ros2 launch nlra_bringup nlra.launch.py nl:=false
 ```
 
-`nlra.launch.py` brings up (in order, with delays):
+`nlra.launch.py` brings up components as soon as their dependencies are ready
+(no fixed delays):
 
 | t (s) | component                                   |
 |-------|---------------------------------------------|
 | 0     | Gazebo sim + robot spawn + controllers      |
-| 25    | ros_gz pose bridge (object poses)           |
-| 30    | world model + MoveIt `move_group`           |
-| 40    | skill servers (embed the MoveItPy motion planner) |
-| 45    | orchestrator                                |
-| 50    | NL interface + rosbridge                      |
-| 55    | web UI (http://localhost:8080)               |
+| ~2    | pose bridge, world model, orchestrator, NL interface, rosbridge, web UI |
+| ~10   | MoveIt `move_group` (after controllers are active) |
+| ~12   | skill servers (embed the MoveItPy motion planner) |
+
+The pure-Python nodes discover their services/actions lazily, so they start
+early; `move_group` and the skill servers wait for a readiness gate that
+observes the arm controller. Startup adapts to the host (about 15 s on this
+machine).
 
 Each node is independently restartable at runtime.
 
